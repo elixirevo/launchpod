@@ -28,6 +28,7 @@ rm -rf dist/Launchpod.app/Contents/Frameworks/Sparkle.framework
 mkdir -p dist/Launchpod.app/Contents/Frameworks
 ditto "$launchpod_sparkle/Sparkle.framework" dist/Launchpod.app/Contents/Frameworks/Sparkle.framework
 cp "$launchpod_dir/Launchpod" dist/Launchpod.app/Contents/MacOS/Launchpod
+python3 scripts/thin-arm64.py dist/Launchpod.app/Contents/Frameworks
 # Icon Composer assets require full Xcode. Keep this override local to actool.
 launchpod_icon_developer="${DEVELOPER_DIR:-$(xcode-select -p)}"
 if [[ "$launchpod_icon_developer" == /Library/Developer/CommandLineTools && -d /Applications/Xcode.app/Contents/Developer ]]; then

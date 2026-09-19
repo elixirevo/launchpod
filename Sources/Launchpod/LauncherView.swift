@@ -1017,6 +1017,9 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         layoutTiles(items, in: preview, rowCount: insideFolder ? folderRows : rows, insideFolder:insideFolder)
         preview.layoutSubtreeIfNeeded()
         view.superview?.addSubview(preview, positioned: .above, relativeTo: view)
+        // AppKit installs a new view's backing layer during display. Finish
+        // that installation before the first drag transform is applied.
+        window?.displayIfNeeded()
         neighboringPages.append((offset,preview))
     }
     private func settleBackgroundPaging(at timestamp: TimeInterval, cancelled: Bool = false, targetOverride: Int? = nil) {
@@ -1796,7 +1799,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
                 if !Motion.reduced {
                     try check(returningTile != nil && returnHiddenID == sourceID && tiles.first { $0.content.id == sourceID }?.isHidden == true,
                               "return keeps one floating icon and hides its destination until landing")
-                    try check(returningTile?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue == state.app(sourceID)?.title,
+                    try check(returningTile?.hasRenderedTitle == true && returningTile?.content.title == state.app(sourceID)?.title,
                               "returning tile retains its app name")
                 }
             },
@@ -2355,7 +2358,9 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
             .init { [self] in
                 cancelItemDrag(); cancelPageTransition(); cancelBackgroundPaging()
                 interaction = InteractionState(); search.stringValue = ""; selectedID = nil; currentPage = 0; refresh()
-                key(124,flags:.command); key(123,flags:.command)
+                // Inspect a presented forward slide before reversing it.
+                // Opposite keys in one runloop now correctly coalesce to no motion.
+                key(124,flags:.command)
             },
             .init(delay: 0.1) { [self] in
                 if !Motion.reduced {
@@ -2366,10 +2371,11 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
                     try check(outgoingX < grid.frame.minX-10, "outgoing page moves into the former fixed margin (x=\(outgoingX))")
                     try check(abs((x-outgoingX)-bounds.width) < 2, "pages travel a full screen width including both margins")
                     let gap = x-(outgoingX+grid.bounds.width)
-                    try check(gap >= bounds.width*0.17, "both moving page margins leave a wide gap between app lists")
+                    try check(abs(gap-(gridViewport.bounds.width-grid.bounds.width)) < 2, "moving pages preserve both content margins")
                     try check(gridViewport.subviews.count == 2, "one outgoing page only during rapid direction changes")
                 }
                 try capture("page-transition")
+                key(123,flags:.command)
             },
             .init(delay: Motion.pageDuration*2+0.2) { [self] in
                 try check(currentPage == 0 && !pageTransition && outgoingPage == nil, "queued reverse turn settles without stale page")
@@ -2385,7 +2391,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
                 try check(dragID == sourceID && source.isHidden, "real mouse drag lifts source leaving an empty slot")
                 try check(!interaction.editing && tiles.allSatisfy { !$0.editing }, "starting a drag does not enter edit mode")
                 try check(draggedTile?.content.title == source.content.title && draggedTile?.content.image === source.content.image, "drag retains original icon and title together")
-                try check(draggedTile?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue == source.content.title, "drag contains a rendered title field")
+                try check(draggedTile?.hasRenderedTitle == true && draggedTile?.content.title == source.content.title, "drag contains a rendered title")
                 mouse(.leftMouseDragged,drop)
                 try check(state == original, "drag preview does not save intermediate moves")
             },
@@ -2509,6 +2515,9 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
             .init(delay: 0.22) { [self] in
                 mouse(.leftMouseUp,drop)
                 try check(state.folder(newFolderID)?.pages[0] == Array(folderOrder.dropFirst())+[sourceID], "mouse drag reorders folder contents")
+            },
+            .init(delay:Motion.returnDuration+0.1) { [self] in
+                try check(returningTile == nil, "reordered icon lands before editing the folder title")
                 // A title click must also work after the initial creation flow.
                 interaction.editing = false; refresh()
                 let titlePoint = NSPoint(x:folderTitle.frame.midX,y:folderTitle.frame.midY)
@@ -2516,7 +2525,10 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
                 let release = NSEvent.mouseEvent(with:.leftMouseUp,location:convert(titlePoint,to:nil),modifierFlags:[],
                     timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:0)!
                 NSApp.postEvent(release,atStart:true); mouse(.leftMouseDown,titlePoint)
-                guard let editor = folderTitle.currentEditor() as? NSTextView else { throw LayoutError.invalid("Title click did not focus editor") }
+            },
+            .init(delay:0.06) { [self] in
+                guard let editor = folderTitle.currentEditor() as? NSTextView else { throw LayoutError.invalid("Folder title editor missing after click") }
+                try check(window.firstResponder === editor, "title click focuses its field editor")
                 editor.selectAll(nil); editor.insertText("자주 쓰는 앱",replacementRange:editor.selectedRange()); key(36)
                 try check(state.folder(newFolderID)?.title == "자주 쓰는 앱", "clicking existing folder title supports renaming")
                 source = folderTiles[0]; sourceID = source.content.id; start(source)

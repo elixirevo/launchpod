@@ -1,0 +1,13 @@
+{
+  "architectures": ["arm64"],
+  "repository": "elixirevo/launchpod",
+  "build_command": ["bash", "scripts/build-release.sh"],
+  "sign_identity": "Developer ID Application: Songwoo Yi (74DXCK2J5Q)",
+  "notary_profile": "menubox",
+  "sparkle_account": "launchpod",
+  "sparkle_bin": ".build/artifacts/sparkle/Sparkle/bin",
+  "feed_name": "appcast.xml",
+  "tap_path": "../../tools/homebrew-tap",
+  "cask_token": "launchpod",
+  "cask_template": "homebrew/Casks/launchpod.rb"
+}

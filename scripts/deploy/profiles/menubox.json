@@ -1,0 +1,18 @@
+{
+  "bundle_id": "com.elixirevo.MenuBox",
+  "repository": "elixirevo/menubox",
+  "build_command": ["bash", "scripts/build_app.sh", "{arch}"],
+  "notary_profile": "menubox",
+  "sparkle_account": "menubox",
+  "feed_name": "menubox-appcast.xml",
+  "tap_path": "../homebrew-tap",
+  "cask_token": "menubox",
+  "cask_template": "homebrew/Casks/menubox.rb",
+  "extra_feed_command": [
+    "python3", "scripts/generate_legacy_appcast.py",
+    "--version", "{version}", "--build", "{arm_build}",
+    "--repository", "{repository}", "--tag", "{tag}",
+    "--output", "{output}/appcast.xml"
+  ],
+  "extra_assets": ["appcast.xml"]
+}

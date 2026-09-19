@@ -8,7 +8,7 @@
 
 **Launchpod** is a native macOS app launcher that brings the familiar Launchpad grid, search, pages, and folders to an independent Swift and AppKit app. It's designed to keep your applications easy to find and organize, with a focus on Apple Silicon Macs running macOS Tahoe 26.
 
-*Currently a 0.1.34 development build. Requires macOS 12.0 or later and Apple Silicon (arm64). Some details of the original Launchpad behavior are still being refined.*
+*Version 1.0.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
 
 ## ✨ Features
 
@@ -55,7 +55,15 @@ Launchpod runs as a menu bar app and hides the menu bar while the launcher is op
 
 ## 🚀 Installation & Build
 
-Launchpod uses a build script and Swift Package Manager. No Xcode project setup is required.
+Download the signed and notarized DMG from [GitHub Releases](https://github.com/elixirevo/launchpod/releases/latest), open it, and drag Launchpod to Applications.
+
+Or install using Homebrew:
+
+```bash
+brew install --cask elixirevo/tap/launchpod
+```
+
+To build from source, Launchpod uses a build script and Swift Package Manager. No Xcode project setup is required.
 
 ### Prerequisites
 
@@ -123,7 +131,9 @@ On the first successful scan, Launchpod groups installed system utilities into a
 
 Sparkle provides **Check for Updates…** and **Automatically Check for Updates** in the menu bar context menu. Automatic checks follow Sparkle's consent flow and do not force automatic installation.
 
-Update controls are disabled in the default development build. To enable them for distribution, configure `LAUNCHPOD_UPDATE_FEED_URL` with an HTTPS appcast URL and `LAUNCHPOD_UPDATE_PUBLIC_KEY` with a base64-encoded Ed25519 public key before building. `LAUNCHPOD_SIGN_IDENTITY` selects a signing identity instead of the default ad-hoc signature; notarization and publishing updates require separate release steps.
+Official builds use the signed [Sparkle appcast](https://github.com/elixirevo/launchpod/releases/latest/download/appcast.xml) and public key in `Resources/Info.plist`. Both the feed and update downloads are verified. Source builds inherit this configuration; set both `LAUNCHPOD_UPDATE_FEED_URL` and `LAUNCHPOD_UPDATE_PUBLIC_KEY` to empty strings to disable update checks for local development.
+
+See [Releasing Launchpod](docs/releasing.md) for Developer ID signing, notarization, Sparkle, GitHub Releases, and Homebrew publication.
 
 ## 🛠 Contributing & Verification
 
