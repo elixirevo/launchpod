@@ -7,6 +7,7 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     checks += 1
     if !condition() { fputs("FAIL: \(message)\n", stderr); exit(1) }
 }
+runHotCornerChecks { expect($0,$1) }
 // Language preferences are isolated from the user's application settings.
 let languageDomain = "app.launchpod.LanguageChecks." + UUID().uuidString
 let languageDefaults = UserDefaults(suiteName:languageDomain)!

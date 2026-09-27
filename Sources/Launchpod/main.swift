@@ -37,9 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0 else { return }
             self?.launcher.show()
         }
+        launcher.hotCorners.canOpen = { [weak self] in self?.launcher.isShown == false }
+        launcher.hotCorners.onOpen = { [weak self] screen in self?.launcher.show(on:screen) }
         // Isolated layout/test runs must not install another global listener.
-        if !args.contains("--data-dir") && !args.contains("--preview-output") { launcher.trackpadGesture.start() }
-        if let i = args.firstIndex(of:"--startup-rendering-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+        if !args.contains("--data-dir") && !args.contains("--preview-output") {
+            launcher.trackpadGesture.start()
+            launcher.hotCorners.start()
+        }
+        if let i = args.firstIndex(of:"--outside-click-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+            launcher.onFirstScan = { [weak self] in
+                self?.launcher.runOutsideClickChecks(outputDirectory:URL(fileURLWithPath:args[i+1])) { result in
+                    switch result {
+                    case .success: NSApp.terminate(nil)
+                    case .failure(let error): fputs("\(error.localizedDescription)\n",stderr); exit(1)
+                    }
+                }
+            }
+        } else if let i = args.firstIndex(of:"--startup-rendering-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
             launcher.onFirstScan = { [weak self] in
                 self?.launcher.runStartupRenderingChecks(outputDirectory:URL(fileURLWithPath:args[i+1])) { result in
                     switch result {
@@ -47,6 +61,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .failure(let error): fputs("\(error.localizedDescription)\n",stderr); exit(1)
                     }
                 }
+            }
+        } else if let i = args.firstIndex(of:"--hot-corner-settings-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+            launcher.onFirstScan = { [weak self] in
+                guard let self = self else { return }
+                let domain = "app.launchpod.HotCornerSettingsChecks."+UUID().uuidString
+                let defaults = UserDefaults(suiteName:domain)!
+                let monitor = HotCornerMonitor(defaults:defaults)
+                let settings = SettingsController(launcher:self.launcher,hotCorners:monitor)
+                defer {
+                    monitor.stop(); defaults.removePersistentDomain(forName:domain)
+                    L10n.defaults.removePersistentDomain(forName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)")
+                }
+                settings.showWindow(nil)
+                do {
+                    try settings.runHotCornerSettingsChecks(defaults:defaults,outputDirectory:URL(fileURLWithPath:args[i+1]))
+                    settings.close(); NSApp.terminate(nil)
+                } catch { fputs("\(error.localizedDescription)\n",stderr); exit(1) }
             }
         } else if let i = args.firstIndex(of:"--language-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
             launcher.onFirstScan = { [weak self] in
@@ -311,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // Keep language smoke checks out of the user's preferences.
-if CommandLine.arguments.contains("--language-checks") {
+if CommandLine.arguments.contains("--language-checks") || CommandLine.arguments.contains("--hot-corner-settings-checks") {
     L10n.defaults = UserDefaults(suiteName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)")!
     L10n.defaults.removePersistentDomain(forName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)")
 }

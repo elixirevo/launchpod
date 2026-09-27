@@ -11,6 +11,12 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
     private let gestureStatus = NSTextField(wrappingLabelWithString:"")
     private let gesturePermission = NSButton()
     private var gestureObserver: NSObjectProtocol?
+    private let hotCorners: HotCornerMonitor
+    private var cornerButtons: [HotCorner:NSButton] = [:]
+    private let hotCornerHint = NSTextField(wrappingLabelWithString:"")
+    private let hotCornerWarning = NSTextField(wrappingLabelWithString:"")
+    private let formScroll = NSScrollView()
+    private var form = FlippedView()
 
     private let columnPopup = NSPopUpButton()
     private let rowPopup = NSPopUpButton()
@@ -19,11 +25,14 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
     private let trackpadGesture: TrackpadGesture
     private let appIcons: AppIconSettings
     private var keyMonitor: Any?
-    init(launcher: LauncherController, appIcons: AppIconSettings? = nil, trackpadGesture: TrackpadGesture? = nil) {
+    init(launcher: LauncherController, appIcons: AppIconSettings? = nil, trackpadGesture: TrackpadGesture? = nil,
+         hotCorners: HotCornerMonitor? = nil) {
         self.launcher = launcher
         self.appIcons = appIcons ?? launcher.appIcons
         self.trackpadGesture = trackpadGesture ?? launcher.trackpadGesture
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 738), styleMask: [.titled,.closable], backing: .buffered, defer: false)
+        self.hotCorners = hotCorners ?? launcher.hotCorners
+        let height = max(420,min(738,(NSScreen.main?.visibleFrame.height ?? 900)-48))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: height), styleMask: [.titled,.closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.center()
         rebuildContent()
@@ -36,14 +45,21 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         endRecording()
         window.title = L10n.text("Launchpod Settings", "Launchpod 설정"); window.isReleasedWhenClosed = false; window.delegate = self
         window.isRestorable = false
-        let content = FlippedView(frame: NSRect(x: 0, y: 0, width: 520, height: 738)); window.contentView = content
+        let scrollPosition = formScroll.contentView.bounds.origin
+        let height = window.contentRect(forFrameRect:window.frame).height
+        let root = FlippedView(frame:NSRect(x:0,y:0,width:520,height:height)); window.contentView = root
+        formScroll.frame = NSRect(x:0,y:0,width:520,height:height-70)
+        formScroll.hasVerticalScroller = true; formScroll.hasHorizontalScroller = false
+        formScroll.scrollerStyle = .overlay; formScroll.drawsBackground = false
+        let content = FlippedView(frame:NSRect(x:0,y:0,width:520,height:888))
+        form = content; formScroll.documentView = content; root.addSubview(formScroll)
         func label(_ text: String, y: CGFloat, font: NSFont = .systemFont(ofSize: 13)) {
             let field = NSTextField(labelWithString: text); field.font = font
             field.frame = NSRect(x: 28, y: y, width: 460, height: 24); content.addSubview(field)
         }
-        func button(_ title: String, y: CGFloat, action: Selector, x: CGFloat = 195, width: CGFloat = 295) {
+        func button(_ title: String, y: CGFloat, action: Selector, x: CGFloat = 195, width: CGFloat = 295, container: NSView? = nil) {
             let b = NSButton(title: title, target: self, action: action)
-            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: y, width: width, height: 30); content.addSubview(b)
+            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: y, width: width, height: 30); (container ?? content).addSubview(b)
         }
         languagePopup.removeAllItems()
         columnPopup.removeAllItems(); rowPopup.removeAllItems(); iconPopup.removeAllItems(); gesturePopup.removeAllItems()
@@ -53,28 +69,43 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         label(L10n.text("Open / close shortcut", "열기 / 닫기 단축키"), y: 152)
         shortcut.title = HotKey.shared.label; shortcut.target = self; shortcut.action = #selector(recordShortcut)
         shortcut.bezelStyle = .rounded; shortcut.frame = NSRect(x: 195, y: 144, width: 295, height: 30); content.addSubview(shortcut)
-        label(L10n.text("Grid", "격자"), y: 195)
+        label(L10n.text("Hot corners", "핫 코너"), y: 203)
+        cornerButtons.removeAll()
+        for (index,corner) in HotCorner.allCases.enumerated() {
+            let checkbox = NSButton(checkboxWithTitle:corner.title,target:self,action:#selector(hotCornersChanged))
+            checkbox.frame = NSRect(x:index % 2 == 0 ? 195 : 350,y:index < 2 ? 195 : 229,width:145,height:26)
+            checkbox.state = hotCorners.enabledCorners.contains(corner) ? .on : .off
+            checkbox.setAccessibilityLabel(L10n.text("Open Launchpod from the \(corner.title.lowercased()) corner", "\(corner.title) 모서리에서 Launchpod 열기"))
+            content.addSubview(checkbox); cornerButtons[corner] = checkbox
+        }
+        hotCornerHint.stringValue = L10n.text("Move the pointer to a selected corner on any display to open Launchpod.", "화면의 선택한 모서리로 마우스를 옮기면 Launchpod가 열립니다. 모든 모니터에 적용됩니다.")
+        hotCornerHint.font = .systemFont(ofSize:12); hotCornerHint.textColor = .secondaryLabelColor
+        hotCornerHint.frame = NSRect(x:198,y:269,width:292,height:42); content.addSubview(hotCornerHint)
+        hotCornerWarning.stringValue = L10n.text("Avoid duplicate actions: in System Settings → Desktop & Dock → Hot Corners, set the same corners to “–”. Launchpod must be running to use these corners.", "중복 실행을 막으려면 시스템 설정 → 데스크탑 및 Dock → 핫 코너에서 같은 모서리를 ‘–’로 설정해 주세요. 이 기능은 Launchpod가 실행 중일 때 사용할 수 있습니다.")
+        hotCornerWarning.font = .systemFont(ofSize:12); hotCornerWarning.textColor = .secondaryLabelColor
+        hotCornerWarning.frame = NSRect(x:28,y:324,width:462,height:58); content.addSubview(hotCornerWarning)
+        label(L10n.text("Grid", "격자"), y: 403)
         columnPopup.addItems(withTitles: (3...9).map { L10n.text("\($0) columns", "\($0)열") }); columnPopup.selectItem(at: launcher.launcherView.columns-3)
         rowPopup.addItems(withTitles: (3...7).map { L10n.text("\($0) rows", "\($0)행") }); rowPopup.selectItem(at: launcher.launcherView.rows-3)
-        columnPopup.frame = NSRect(x: 198, y: 187, width: 135, height: 30); rowPopup.frame = NSRect(x: 349, y: 187, width: 135, height: 30)
+        columnPopup.frame = NSRect(x: 198, y: 395, width: 135, height: 30); rowPopup.frame = NSRect(x: 349, y: 395, width: 135, height: 30)
         for popup in [columnPopup,rowPopup] { popup.target = self; popup.action = #selector(gridChanged); content.addSubview(popup) }
-        label(L10n.text("App icon", "앱 아이콘"), y: 248)
+        label(L10n.text("App icon", "앱 아이콘"), y: 456)
         for choice in AppIconChoice.allCases {
             iconPopup.addItem(withTitle:choice.title)
             let thumbnail = self.appIcons.image(for:choice)?.copy() as? NSImage
             thumbnail?.size = NSSize(width:24,height:24)
             iconPopup.lastItem?.image = thumbnail
         }
-        iconPopup.frame = NSRect(x:198,y: 237,width:218,height:32)
+        iconPopup.frame = NSRect(x:198,y: 445,width:218,height:32)
         iconPopup.target = self; iconPopup.action = #selector(iconChanged)
         iconPopup.setAccessibilityLabel(L10n.text("App icon", "앱 아이콘"))
         content.addSubview(iconPopup)
-        iconPreview.frame = NSRect(x:426,y: 224,width:64,height:64)
+        iconPreview.frame = NSRect(x:426,y: 432,width:64,height:64)
         iconPreview.imageScaling = .scaleProportionallyUpOrDown
         iconPreview.setAccessibilityLabel(L10n.text("Selected app icon preview", "선택한 앱 아이콘 미리보기")); content.addSubview(iconPreview)
         let iconHint = NSTextField(labelWithString:L10n.text("Applies to the app file and Dock icon.", "앱 파일과 Dock 아이콘에 적용됩니다."))
         iconHint.font = .systemFont(ofSize:12); iconHint.textColor = .secondaryLabelColor
-        iconHint.frame = NSRect(x:198,y: 284,width:296,height:20); content.addSubview(iconHint)
+        iconHint.frame = NSRect(x:198,y: 492,width:296,height:20); content.addSubview(iconHint)
         label(L10n.text("Language", "언어"), y: 99)
         languagePopup.addItems(withTitles:AppLanguage.allCases.map(\.title))
         languagePopup.selectItem(at:AppLanguage.allCases.firstIndex(of:L10n.language) ?? 0)
@@ -83,36 +114,41 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         languagePopup.target = self; languagePopup.action = #selector(languageChanged)
         content.addSubview(languagePopup)
         updateIconControls()
-        label(L10n.text("Legacy Launchpad", "기존 Launchpad"), y: 328)
-        button(L10n.text("Import This Mac’s Layout…", "이 Mac의 배치 가져오기…"), y: 318, action: #selector(importCurrent))
-        button(L10n.text("Choose Launchpad Database…", "Launchpad DB 파일 선택…"), y: 353, action: #selector(importDatabase))
-        label(L10n.text("Launchpod layout", "Launchpod 배치"), y: 402)
-        button(L10n.text("Export…", "내보내기…"), y: 392, action: #selector(exportLayout), width: 140)
-        button(L10n.text("Import…", "가져오기…"), y: 392, action: #selector(importLayout), x: 348, width: 142)
-        label(L10n.text("App library", "앱 목록"), y: 445)
-        button(L10n.text("Add App / Folder Location…", "앱 / 폴더 위치 추가…"), y: 435, action: #selector(addLocation))
-        button(L10n.text("Restore All Hidden Apps", "숨긴 앱 모두 복원"), y: 470, action: #selector(showHidden))
-        label(L10n.text("Trackpad gestures", "트랙패드 제스처"), y: 522)
-        gestureEnabled.frame = NSRect(x:195,y: 515,width:295,height:26)
+        label(L10n.text("Legacy Launchpad", "기존 Launchpad"), y: 536)
+        button(L10n.text("Import This Mac’s Layout…", "이 Mac의 배치 가져오기…"), y: 526, action: #selector(importCurrent))
+        button(L10n.text("Choose Launchpad Database…", "Launchpad DB 파일 선택…"), y: 561, action: #selector(importDatabase))
+        label(L10n.text("Launchpod layout", "Launchpod 배치"), y: 610)
+        button(L10n.text("Export…", "내보내기…"), y: 600, action: #selector(exportLayout), width: 140)
+        button(L10n.text("Import…", "가져오기…"), y: 600, action: #selector(importLayout), x: 348, width: 142)
+        label(L10n.text("App library", "앱 목록"), y: 653)
+        button(L10n.text("Add App / Folder Location…", "앱 / 폴더 위치 추가…"), y: 643, action: #selector(addLocation))
+        button(L10n.text("Restore All Hidden Apps", "숨긴 앱 모두 복원"), y: 678, action: #selector(showHidden))
+        label(L10n.text("Trackpad gestures", "트랙패드 제스처"), y: 730)
+        gestureEnabled.frame = NSRect(x:195,y: 723,width:295,height:26)
         gestureEnabled.target = self; gestureEnabled.action = #selector(gestureChanged)
         content.addSubview(gestureEnabled)
         gesturePopup.addItems(withTitles:LauncherGestureChoice.allCases.map(\.title))
         gesturePopup.font = .systemFont(ofSize:12)
-        gesturePopup.frame = NSRect(x:195,y: 548,width:295,height:30)
+        gesturePopup.frame = NSRect(x:195,y: 756,width:295,height:30)
         gesturePopup.target = self; gesturePopup.action = #selector(gestureChanged)
         gesturePopup.setAccessibilityLabel(L10n.text("Gesture to open Launchpod", "Launchpod 열기 제스처"))
         content.addSubview(gesturePopup)
         gestureStatus.font = .systemFont(ofSize:12); gestureStatus.textColor = .secondaryLabelColor
-        gestureStatus.frame = NSRect(x:198,y: 588,width:292,height:40)
+        gestureStatus.frame = NSRect(x:198,y: 796,width:292,height:40)
         content.addSubview(gestureStatus)
         gesturePermission.title = L10n.text("Accessibility Settings…", "손쉬운 사용 권한 설정…")
         gesturePermission.target = self; gesturePermission.action = #selector(gesturePermissionClicked)
         gesturePermission.bezelStyle = .rounded
-        gesturePermission.frame = NSRect(x:195,y: 629,width:295,height:30)
+        gesturePermission.frame = NSRect(x:195,y: 837,width:295,height:30)
         content.addSubview(gesturePermission)
         updateGestureControls()
-        button(L10n.text("Rescan Apps", "앱 다시 검색"), y: 683, action: #selector(rescan), x: 28, width: 140)
-        button(L10n.text("Open Launchpod", "Launchpod 열기"), y: 683, action: #selector(openLauncher), x: 345, width: 145)
+        button(L10n.text("Rescan Apps", "앱 다시 검색"), y: height-55, action: #selector(rescan), x: 28, width: 140, container:root)
+        button(L10n.text("Open Launchpod", "Launchpod 열기"), y: height-55, action: #selector(openLauncher), x: 345, width: 145, container:root)
+        formScroll.contentView.scroll(to:scrollPosition)
+        formScroll.reflectScrolledClipView(formScroll.contentView)
+    }
+    @objc private func hotCornersChanged() {
+        hotCorners.configure(corners:Set(cornerButtons.compactMap { $0.value.state == .on ? $0.key : nil }))
     }
     @objc private func languageChanged() {
         guard AppLanguage.allCases.indices.contains(languagePopup.indexOfSelectedItem) else { return }
@@ -140,6 +176,79 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
     }
     @objc private func gesturePermissionClicked() { trackpadGesture.requestPermission(); updateGestureControls() }
     deinit { if let observer = gestureObserver { NotificationCenter.default.removeObserver(observer) } }
+    func runHotCornerSettingsChecks(defaults: UserDefaults, outputDirectory: URL) throws {
+        var checks = 0
+        func check(_ value: Bool, _ message: String) throws {
+            guard value else { throw NSError(domain:"HotCornerSettingsChecks",code:1,userInfo:[NSLocalizedDescriptionKey:message]) }
+            checks += 1
+        }
+        try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
+        try check(hotCorners.enabledCorners.isEmpty && !hotCorners.isListening,"fresh corners are disabled without a listener")
+        for corner in HotCorner.allCases {
+            let control = cornerButtons[corner]!
+            control.state = .on
+            try check(control.sendAction(control.action,to:control.target),"corner checkbox action is connected")
+            try check(hotCorners.enabledCorners.contains(corner),"each corner can be enabled")
+        }
+        cornerButtons[.topRight]!.state = .off
+        hotCornersChanged()
+        let selection: Set<HotCorner> = [.topLeft,.bottomLeft,.bottomRight]
+        try check(hotCorners.enabledCorners == selection,"turning off one corner preserves the others")
+        try check(HotCornerMonitor(defaults:defaults).enabledCorners == selection,"corner preferences survive relaunch")
+        try check(!hotCorners.isListening,"isolated settings changes do not install global listeners")
+        for language in [AppLanguage.english,.korean] {
+            L10n.select(language)
+            rebuildContent()
+            for corner in HotCorner.allCases {
+                let control = cornerButtons[corner]!
+                try check(control.title == corner.title,"corner labels follow the language")
+                try check((control.state == .on) == selection.contains(corner),"language changes preserve selected corners")
+                try check(form.bounds.contains(control.frame),"corner controls fit the form")
+            }
+            try check(hotCornerWarning.stringValue.contains(L10n.text("System Settings", "시스템 설정"))
+                && hotCornerWarning.stringValue.contains("–"),"settings explain how to avoid duplicate system actions")
+            let controls: [NSView] = HotCorner.allCases.map { cornerButtons[$0]! } + [hotCornerHint,hotCornerWarning]
+            for i in controls.indices { for j in controls.indices where j > i {
+                try check(!controls[i].frame.intersects(controls[j].frame),"corner controls and guidance do not overlap")
+            } }
+            for field in [hotCornerHint,hotCornerWarning] {
+                let size = field.cell!.cellSize(forBounds:NSRect(x:0,y:0,width:field.frame.width,height:1000))
+                try check(size.height <= field.frame.height,"localized guidance fits without clipping")
+            }
+            for (name,rect) in [("top",NSRect(x:0,y:0,width:520,height:385)),
+                                ("bottom",NSRect(x:0,y:715,width:520,height:163))] {
+                form.scrollToVisible(rect)
+                window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
+                RunLoop.current.run(until:Date().addingTimeInterval(0.15))
+                if let window = window,
+                   let cg = CGWindowListCreateImage(.null,.optionIncludingWindow,CGWindowID(window.windowNumber),[.boundsIgnoreFraming]),
+                   let png = NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:]) {
+                    try png.write(to:outputDirectory.appendingPathComponent("settings-\(language.rawValue)-\(name).png"))
+                } else { try check(false,"settings screenshot is available") }
+            }
+            try check(form.visibleRect.intersects(gesturePermission.frame),"scrolling reaches the final settings controls")
+        }
+        hotCorners.canOpen = { false }
+        hotCorners.start()
+        try check(hotCorners.isListening,"enabled corners start native monitoring")
+        let center = NSWorkspace.shared.notificationCenter
+        center.post(name:NSWorkspace.willSleepNotification,object:nil)
+        try check(!hotCorners.isListening,"sleep stops monitoring")
+        center.post(name:NSWorkspace.sessionDidResignActiveNotification,object:nil)
+        center.post(name:NSWorkspace.didWakeNotification,object:nil)
+        try check(!hotCorners.isListening,"wake does not monitor an inactive session")
+        center.post(name:NSWorkspace.sessionDidBecomeActiveNotification,object:nil)
+        try check(hotCorners.isListening,"returning to the awake session restores monitoring")
+        hotCorners.configure(corners:[])
+        try check(!hotCorners.isListening,"disabling every corner removes monitoring")
+        hotCorners.configure(corners:selection)
+        try check(hotCorners.isListening,"enabling a corner takes effect immediately")
+        hotCorners.stop()
+        try check(!hotCorners.isListening,"termination removes monitoring")
+        let report = "PASS: \(checks) hot corner settings and lifecycle checks\nNo system hot corner preferences were changed; no mouse input was posted.\n"
+        try report.write(to:outputDirectory.appendingPathComponent("checks.txt"),atomically:true,encoding:.utf8)
+        print(report)
+    }
     func runLanguageChecks(outputDirectory: URL) throws {
         var checks = 0
         func check(_ value: Bool, _ message: String) throws {
@@ -164,7 +273,7 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
             guard let view = window?.contentView else { continue }
             view.layoutSubtreeIfNeeded(); window?.displayIfNeeded()
             for control in [languagePopup,columnPopup,rowPopup,iconPopup,gesturePopup] {
-                try check(view.bounds.contains(control.frame), "picker remains inside window")
+                try check(form.bounds.contains(control.frame), "picker remains inside scrollable settings")
             }
             window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps:true)
@@ -198,10 +307,11 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         try check(!gestureStatus.stringValue.isEmpty,"status explains readiness or permission requirement")
         try check(gesturePermission.title == L10n.text("Accessibility Settings…", "손쉬운 사용 권한 설정…"),"permission control names the actual Accessibility pane")
         let controls: [NSView] = [gestureEnabled,gesturePopup,gestureStatus,gesturePermission]
-        for control in controls { try check(window!.contentView!.bounds.contains(control.frame),"gesture control is inside settings") }
+        for control in controls { try check(form.bounds.contains(control.frame),"gesture control is inside scrollable settings") }
         for i in controls.indices { for j in controls.indices where j > i {
             try check(!controls[i].frame.intersects(controls[j].frame),"gesture controls do not overlap")
         } }
+        form.scrollToVisible(NSRect(x:0,y:715,width:520,height:163))
         try "PASS: \(checks) gesture settings checks\n".write(to:outputDirectory.appendingPathComponent("settings-checks.txt"),atomically:true,encoding:.utf8)
     }
     func captureGestureSettings(outputDirectory: URL) throws {

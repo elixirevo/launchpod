@@ -20,6 +20,8 @@ final class LauncherController: NSObject, NSWindowDelegate {
         fileIconURL: CommandLine.arguments.contains("--data-dir") || CommandLine.arguments.contains("--preview-output") ? nil : Bundle.main.bundleURL,
         refreshDock: { DockShortcut.refreshIcon() })
     let trackpadGesture = TrackpadGesture()
+    let hotCorners = HotCornerMonitor()
+    private var openingScreen: NSScreen?
     let store: LayoutStore
     let catalog = AppCatalog()
     let launcherView = LauncherView(frame: .zero)
@@ -31,6 +33,8 @@ final class LauncherController: NSObject, NSWindowDelegate {
     private var iconPreparation: UUID?
     private var waitingForCatalog = false
     private var visibilityGeneration = 0
+    private var outsideClickMonitor: Any?
+    var isMonitoringOutsideClicks: Bool { outsideClickMonitor != nil }
     private var previousApp: NSRunningApplication?
     private var previousPresentation: NSApplication.PresentationOptions = []
     private let layoutUndo = UndoManager()
@@ -168,7 +172,9 @@ final class LauncherController: NSObject, NSWindowDelegate {
     func toggle() { isShown ? dismiss() : show() }
     private func fitWindow() {
         launcherView.finishFolderDrop()
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else { return }
+        let screens = NSScreen.screens
+        let requested = openingScreen.flatMap { requested in screens.first { $0 == requested } }
+        guard let screen = requested ?? screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else { return }
         if CommandLine.arguments.contains("--windowed") { window.center() }
         else { window.setFrame(screen.frame, display: true) }
     }
@@ -183,8 +189,9 @@ final class LauncherController: NSObject, NSWindowDelegate {
         guard !isPreparingToShow, !CommandLine.arguments.contains("--windowed") else { return }
         menuTransition.prepare(screen:screen,image:wallpaper(for:screen),opacity:1,blocksMenuInteraction:true)
     }
-    func show() {
+    func show(on screen: NSScreen? = nil) {
         guard !isShown else { return }
+        openingScreen = screen
         let fromHidden = !window.isVisible
         if fromHidden {
             previousApp = NSWorkspace.shared.frontmostApplication
@@ -235,6 +242,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
             CATransaction.commit()
         }
         window.makeKeyAndOrderFront(nil); window.makeFirstResponder(launcherView)
+        startOutsideClickMonitoring()
         launcherView.animateVisibility(showing: true, fromHidden: fromHidden)
         if fullScreen { menuTransition.animate(covering: true, duration: Motion.reduced ? 0.12 : Motion.enterDuration) }
         // Directory watchers are supplemented by a scan on each invocation.
@@ -250,6 +258,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
     }
     func dismiss(restoreFocus: Bool = true) {
         guard isShown else { return }
+        stopOutsideClickMonitoring()
         isShown = false
         visibilityGeneration += 1
         waitingForCatalog = false; isPreparingToShow = false
@@ -279,10 +288,12 @@ final class LauncherController: NSObject, NSWindowDelegate {
     }
     func prepareForTermination() {
         trackpadGesture.stop()
+        hotCorners.stop()
         dismissImmediately()
     }
     private func dismissImmediately() {
         // Cancel pending handoffs and synchronously return menu ownership.
+        stopOutsideClickMonitoring()
         visibilityGeneration += 1
         isShown = false
         waitingForCatalog = false; isPreparingToShow = false
@@ -292,6 +303,29 @@ final class LauncherController: NSObject, NSWindowDelegate {
         setPresentation(previousPresentation)
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { dismiss(); return false }
+    private func startOutsideClickMonitoring() {
+        stopOutsideClickMonitoring()
+        let generation = visibilityGeneration
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown,.otherMouseDown]) { [weak self] event in
+            guard let self = self, self.visibilityGeneration == generation else { return }
+            self.handleExternalMouseDown(event)
+        }
+    }
+    private func stopOutsideClickMonitoring() {
+        if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor); outsideClickMonitor = nil }
+    }
+    func handleExternalMouseDown(_ event: NSEvent) {
+        guard [.leftMouseDown,.rightMouseDown,.otherMouseDown].contains(event.type),
+              isShown, !launcherView.isDraggingItem, NSApp.modalWindow == nil else { return }
+        // A global monitor's windowless mouse events use AppKit screen coordinates.
+        // Use the click's position, not the pointer's later position at delivery.
+        let point = event.window?.convertPoint(toScreen:event.locationInWindow) ?? event.locationInWindow
+        guard !window.frame.contains(point) else { return }
+        // Desktop clicks on another display need not change this window's key
+        // status. Do not require focus, or reactivate the app we opened over.
+        dismiss(restoreFocus:false)
+    }
+    deinit { stopOutsideClickMonitoring() }
     func windowDidResignKey(_ notification: Notification) {
         guard isShown, !launcherView.isDraggingItem, NSApp.modalWindow == nil,
               settingsController?.window?.isVisible != true else { return }

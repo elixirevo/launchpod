@@ -9,6 +9,6 @@ xcrun swiftc -sdk "$launchpod_sdk" -target arm64-apple-macosx12.0 \
   -module-name LaunchpodCore Sources/LaunchpodCore/*.swift \
   -emit-module-path "$launchpod_dir/LaunchpodCore.swiftmodule" -o "$launchpod_dir/LaunchpodCore.o"
 xcrun swiftc -sdk "$launchpod_sdk" -target arm64-apple-macosx12.0 \
-  -I Sources/CSQLite -I "$launchpod_dir" Sources/CoreChecks/main.swift \
+  -I Sources/CSQLite -I "$launchpod_dir" Sources/CoreChecks/*.swift \
   "$launchpod_dir/LaunchpodCore.o" -o "$launchpod_dir/CoreChecks"
 "$launchpod_dir/CoreChecks" "$@"

@@ -8,7 +8,7 @@
 
 **Launchpod** is a native macOS app launcher that brings the familiar Launchpad grid, search, pages, and folders to an independent Swift and AppKit app. It's designed to keep your applications easy to find and organize, with a focus on Apple Silicon Macs running macOS Tahoe 26.
 
-*Version 1.0.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
+*Version 1.1.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
 
 ## ✨ Features
 
@@ -18,6 +18,7 @@
 * **Smooth Page Navigation:** Switch pages with keyboard shortcuts, page dots, background dragging, or trackpad and Magic Mouse scrolling.
 * **Trackpad Gestures:** Pinch with four or five fingers to open Launchpod and spread to close it. Gesture preferences are configurable in Settings.
 * **Dock & Menu Bar Access:** Open Launchpod from its Dock shortcut, menu bar icon, or a customizable global keyboard shortcut. Drag top-level apps directly to the Dock.
+* **Hot Corners:** Choose any of the four screen corners in Settings to open Launchpod by moving the pointer there. Each corner can be enabled independently, on every display.
 * **Layout Migration:** Import a supported legacy Launchpad layout, or export and import JSON layouts between Macs.
 * **Undo & Redo:** Undo and redo layout changes while organizing your apps.
 * **App Management:** Open apps, reveal them in Finder, hide them, or move eligible apps to the Trash after confirmation. Removed apps are cleared from the catalog on the next scan.
@@ -36,6 +37,7 @@
 | Scroll / click a page dot / drag an empty area horizontally | Switch pages |
 | `Esc` | Exit editing, close a folder, clear search, or close the launcher, in that order |
 | Click an empty area | Close the folder or launcher |
+| Click the desktop on another display | Close the launcher, even when it does not have focus |
 | Long-press an icon / hold `Option` | Enter organization mode / show delete buttons for eligible apps |
 | Drag an icon | Rearrange apps; drop in a valid position to save the change |
 | Drag an icon to a page edge | Move it to another page |
@@ -48,6 +50,8 @@
 | `Cmd + ,` | Open Settings |
 
 *Right-click the menu bar icon and choose **Settings…** to change the global shortcut, grid, language, icon, and gesture preferences.*
+
+In **Settings… → Hot corners**, select the corners you want to use. All corners are off by default. To avoid two actions running together, set those same corners to **“–”** in **System Settings → Desktop & Dock → Hot Corners**. Launchpod must remain running; it does not change macOS hot corner settings. Move away from a corner before using it again. Hot corners do not activate during a mouse drag.
 
 *Dragging an app to an invalid position or pressing `Esc` during a drag returns it to its original slot. Undo restores layout changes, but does not recover application files moved to the Trash.*
 
@@ -162,5 +166,9 @@ dist/Launchpod.app/Contents/MacOS/Launchpod --windowed \
 ```
 
 Add `--reduce-motion` to check reduced animations without changing system preferences. `--preview-output /path/to/preview.png` saves a preview of the app and exits. Always use a separate `--data-dir` with test options.
+
+`--hot-corner-settings-checks /path/to/results` (with a separate `--data-dir`) checks corner selection, persistence, monitor lifecycle, and English/Korean settings layouts. It captures both ends of the scrollable settings window without changing system hot corners or posting mouse input. The core checks also cover corner entry, repeat suppression, dragging, and display coordinates.
+
+`--outside-click-checks /path/to/results` (with a separate `--data-dir`) verifies dismissal without key focus, focus retention, reopening, and event-monitor teardown using in-memory outside-click events.
 
 See [App icon resources](Resources/README.md) for the Icon Composer assets and how they are bundled.

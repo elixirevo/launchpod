@@ -1,5 +1,5 @@
 cask "launchpod" do
-  version "1.0.0"
+  version "1.1.0"
   sha256 "REPLACED_DURING_PREPARE"
 
   url "https://github.com/elixirevo/launchpod/releases/download/v#{version}/Launchpod-#{version}-arm64.dmg"
