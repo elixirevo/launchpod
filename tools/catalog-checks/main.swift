@@ -59,6 +59,41 @@ do {
     let restored = try store.load()
     try expect(AppSearch.results(for:"LAUNCHPOD",in:restored).contains { $0.path == launchpod.path },"Launchpod remains searchable after save and reload")
     try expect(AppSearch.results(for:"MENUUTILITY",in:restored).count == 1,"agent remains searchable after save and reload")
+    // Safari is a hidden symlink in /Applications to a visible Cryptex app.
+    // Test discovery through the directory, not just a directly supplied app.
+    let links = directory.appendingPathComponent("Links")
+    let targets = directory.appendingPathComponent("Targets")
+    try fm.createDirectory(at:links,withIntermediateDirectories:true)
+    let safari = try fixture("Safari",parent:targets,info:["CFBundleIdentifier":"com.apple.Safari"])
+    let safariLink = links.appendingPathComponent("Safari.app")
+    try fm.createSymbolicLink(at:safariLink,withDestinationURL:safari)
+    try expect(lchflags(safariLink.path,UInt32(UF_HIDDEN)) == 0,"mark Safari symlink hidden without hiding its target")
+    try expect((try safariLink.resourceValues(forKeys:[.isHiddenKey])).isHidden == true,"fixture reproduces Safari's hidden attribute")
+    let hidden = try fixture("Hidden",parent:links)
+    try expect(chflags(hidden.path,UInt32(UF_HIDDEN)) == 0,"mark internal app hidden")
+    let hiddenLink = links.appendingPathComponent("HiddenAlias.app")
+    try fm.createSymbolicLink(at:hiddenLink,withDestinationURL:hidden)
+    try expect(lchflags(hiddenLink.path,UInt32(UF_HIDDEN)) == 0,"mark internal alias hidden")
+    _ = try fixture(".Internal",parent:links)
+    _ = try fixture("Nested",parent:links.appendingPathComponent(".private"))
+    let brokenLink = links.appendingPathComponent("Missing.app")
+    try fm.createSymbolicLink(at:brokenLink,withDestinationURL:targets.appendingPathComponent("Missing.app"))
+    let linked = AppCatalog.discover(roots:[links])
+    try expect(linked.map(\.path) == [safari.path],"hidden symlink to visible app is discovered; hidden apps, private directories and broken links stay excluded")
+    try expect(AppCatalog.discover(roots:[links,targets,safari]).count == 1,"symlink and target roots do not duplicate Safari")
+    let passwords = try fixture("Passwords",parent:links,info:["CFBundlePackageType":"XPC!"])
+    _ = try fixture("BackgroundXPC",parent:links,info:["CFBundlePackageType":"XPC!","LSBackgroundOnly":true])
+    let recovered = AppCatalog.discover(roots:[links])
+    try expect(recovered.count == 2 && recovered.contains { $0.path == passwords.path },"standalone XPC application is included; background XPC stays excluded")
+    layout.reconcile(found + recovered)
+    try layout.validate()
+    try expect(layout.hidden == [existingID],"recovery preserves previously hidden apps")
+    for query in ["safari","passwords"] {
+        try expect(AppSearch.results(for:query,in:layout).count == 1,"recovered app appears in search: "+query)
+    }
+    try store.save(layout)
+    let recoveredLayout = try store.load()
+    try expect(AppSearch.results(for:"SAFARI",in:recoveredLayout).count == 1 && AppSearch.results(for:"PASSWORDS",in:recoveredLayout).count == 1,"recovered apps remain searchable after reload")
     let args = CommandLine.arguments
     if let i = args.firstIndex(of:"--installed"), args.indices.contains(i+1) {
         let url = URL(fileURLWithPath:args[i+1]).resolvingSymlinksInPath().standardizedFileURL
@@ -68,6 +103,21 @@ do {
         try expect(AppSearch.results(for:url.deletingPathExtension().lastPathComponent.lowercased(),in:actual).count == 1,
             "installed app is placed and searchable")
         print("Installed app: \(installed[0].title); \(installed[0].bundleID); \(installed[0].path)")
+        let defaultScan = AppCatalog.discover(roots:AppCatalog().roots)
+        try expect(defaultScan.contains { $0.path == url.path },"installed app is also discovered through default scan roots")
+    }
+    if args.contains("--audit-installed") {
+        let installed = AppCatalog.discover(roots:AppCatalog().roots)
+        let saved = LayoutStore(directory:fm.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Launchpod"))
+        var state = try saved.load()
+        let previousPaths = Set(state.apps.map(\.path))
+        state.reconcile(installed)
+        try state.validate()
+        for app in installed where !previousPaths.contains(app.path) {
+            print("Newly discovered: \(app.title); \(app.bundleID); \(app.path)")
+            try expect(AppSearch.results(for:app.title,in:state).contains { $0.path == app.path },"newly discovered installed app is searchable")
+        }
+        print("Installed catalog: \(installed.count) apps (existing user layout read only)")
     }
     print("PASS: \(checks) catalog checks")
 } catch {

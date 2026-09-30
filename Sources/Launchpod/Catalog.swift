@@ -31,8 +31,12 @@ final class AppCatalog {
             // LSUIElement controls Dock presence, not whether an app can be
             // launched by the user (e.g. PinShot or Tailscale). Embedded helpers
             // are already excluded by not descending into app bundles below.
-            guard visited.insert(canonical.path).inserted, let bundle = Bundle(url: canonical),
-                  bundle.infoDictionary?["CFBundlePackageType"] as? String == "APPL",
+            guard visited.insert(canonical.path).inserted, let bundle = Bundle(url: canonical) else { return }
+            let packageType = bundle.infoDictionary?["CFBundlePackageType"] as? String
+            // Some standalone system apps (e.g. Passwords) use XPC! rather
+            // than APPL. Require macOS to identify those bundles as apps.
+            guard (packageType == "APPL" || (packageType == "XPC!" &&
+                    (try? canonical.resourceValues(forKeys:[.isApplicationKey]).isApplication) == true)),
                   (bundle.infoDictionary?["LSBackgroundOnly"] as? NSNumber)?.boolValue != true,
                   bundle.bundleIdentifier != "com.apple.launchpad.launcher",
                   let executable = bundle.executableURL, fm.isExecutableFile(atPath: executable.path) else { return }
@@ -52,10 +56,22 @@ final class AppCatalog {
         }
         for root in roots {
             if root.pathExtension.lowercased() == "app" { inspect(root); continue }
-            guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey], options: [.skipsHiddenFiles], errorHandler: { _, _ in true }) else { continue }
+            // Safari's /Applications entry is a hidden symlink to a visible
+            // Cryptex app. Inspect hidden links before filtering hidden entries.
+            guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.isHiddenKey, .isSymbolicLinkKey, .isPackageKey], options: [], errorHandler: { _, _ in true }) else { continue }
             for case let url as URL in e {
+                let values = try? url.resourceValues(forKeys:[.isHiddenKey, .isSymbolicLinkKey, .isPackageKey])
+                if url.lastPathComponent.hasPrefix(".") { e.skipDescendants(); continue }
+                if values?.isHidden == true {
+                    let target = url.resolvingSymlinksInPath().standardizedFileURL
+                    if url.pathExtension.lowercased() == "app", values?.isSymbolicLink == true,
+                       (try? target.resourceValues(forKeys:[.isHiddenKey]).isHidden) == false {
+                        inspect(url)
+                    }
+                    e.skipDescendants(); continue
+                }
                 if url.pathExtension.lowercased() == "app" { inspect(url); e.skipDescendants() }
-                else if (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) == true { e.skipDescendants() }
+                else if values?.isPackage == true { e.skipDescendants() }
             }
         }
         return found.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
