@@ -7,6 +7,7 @@ final class LauncherWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
     override func sendEvent(_ event: NSEvent) {
+        if (contentView as? LauncherView)?.routeAppCollection(event) == true { return }
         if (contentView as? LauncherView)?.routeItemDrag(event) == true { return }
         super.sendEvent(event)
     }
@@ -315,6 +316,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
         if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor); outsideClickMonitor = nil }
     }
     func handleExternalMouseDown(_ event: NSEvent) {
+        launcherView.cancelAppCollection()
         guard [.leftMouseDown,.rightMouseDown,.otherMouseDown].contains(event.type),
               isShown, !launcherView.isDraggingItem, NSApp.modalWindow == nil else { return }
         // A global monitor's windowless mouse events use AppKit screen coordinates.
@@ -327,6 +329,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
     }
     deinit { stopOutsideClickMonitoring() }
     func windowDidResignKey(_ notification: Notification) {
+        launcherView.cancelAppCollection()
         guard isShown, !launcherView.isDraggingItem, NSApp.modalWindow == nil,
               settingsController?.window?.isVisible != true else { return }
         dismiss(restoreFocus: false)

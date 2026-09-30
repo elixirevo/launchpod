@@ -349,6 +349,10 @@ final class AppTile: FlippedView, NSDraggingSource {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         label.contentsScale = window?.backingScaleFactor ?? 2
+        // Recycling a page detaches its tiles and AppKit removes their layer
+        // animations. The cached editing flag stays true, so its didSet does
+        // not restart the wiggle when the same tile returns to the window.
+        updateWiggle()
     }
     override var acceptsFirstResponder: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -452,7 +456,7 @@ final class AppTile: FlippedView, NSDraggingSource {
     private func updateWiggle() {
         for view in [iconView, folderView] {
             view.layer?.removeAnimation(forKey: "editing")
-            guard editing && !Motion.reduced && !folderDropPreview else { continue }
+            guard window != nil && editing && !Motion.reduced && !folderDropPreview else { continue }
             let animation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
             animation.values = [-0.018, 0.018, -0.018]
             animation.duration = 0.24 + Double(abs(content.id.hashValue % 5))*0.012

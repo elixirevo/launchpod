@@ -39,6 +39,7 @@
 | Click an empty area | Close the folder or launcher |
 | Click the desktop on another display | Close the launcher, even when it does not have focus |
 | Long-press an icon / hold `Option` | Enter organization mode / show delete buttons for eligible apps |
+| Hold `Cmd` and click apps while editing | Collect apps into a stack at the pointer; release `Cmd` to place them together |
 | Drag an icon | Rearrange apps; drop in a valid position to save the change |
 | Drag an icon to a page edge | Move it to another page |
 | Hold an app over another app, then drop | Create a folder and enter its name |
@@ -54,6 +55,8 @@
 In **Settings… → Hot corners**, select the corners you want to use. All corners are off by default. To avoid two actions running together, set those same corners to **“–”** in **System Settings → Desktop & Dock → Hot Corners**. Launchpod must remain running; it does not change macOS hot corner settings. Move away from a corner before using it again. Hot corners do not activate during a mouse drag.
 
 *Dragging an app to an invalid position or pressing `Esc` during a drag returns it to its original slot. Undo restores layout changes, but does not recover application files moved to the Trash.*
+
+While collecting apps, keep `Cmd` held to switch pages with the arrow keys, page dots, scrolling, or by pausing at a screen edge. `Cmd`-click a folder to collect apps inside it; move outside the folder to return to the main grid. Release over a folder to add the whole stack, or pause over an app until it highlights to create a new folder. `Esc` or releasing outside the grid cancels the collection. Apps are placed in pickup order, and one Undo restores the entire move.
 
 Launchpod runs as a menu bar app and hides the menu bar while the launcher is open. On launch or reopen, it adds its Dock shortcut if missing, restarting the Dock once when needed. The shortcut stays after quitting, without a running indicator, and is restored on the next launch if removed.
 
@@ -170,5 +173,9 @@ Add `--reduce-motion` to check reduced animations without changing system prefer
 `--hot-corner-settings-checks /path/to/results` (with a separate `--data-dir`) checks corner selection, persistence, monitor lifecycle, and English/Korean settings layouts. It captures both ends of the scrollable settings window without changing system hot corners or posting mouse input. The core checks also cover corner entry, repeat suppression, dragging, and display coordinates.
 
 `--outside-click-checks /path/to/results` (with a separate `--data-dir`) verifies dismissal without key focus, focus retention, reopening, and event-monitor teardown using in-memory outside-click events.
+
+`--editing-page-checks /path/to/results` (with a separate `--data-dir`) checks long-press editing, reused app and folder animations after paging away and back, and animation cleanup on exit. Run again with `--reduce-motion` to verify that preference.
+
+`--app-collection-checks /path/to/results` (with a separate `--data-dir`) checks Command-click collection, pointer following, page and folder moves, grouping, cancellation, and batch undo/redo. It uses an isolated fixture and never launches apps. Run again with `--reduce-motion` to check reduced animations.
 
 See [App icon resources](Resources/README.md) for the Icon Composer assets and how they are bundled.

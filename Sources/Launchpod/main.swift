@@ -44,7 +44,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             launcher.trackpadGesture.start()
             launcher.hotCorners.start()
         }
-        if let i = args.firstIndex(of:"--outside-click-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+        if let i = args.firstIndex(of:"--app-collection-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+            launcher.onFirstScan = { [weak self] in
+                guard let self = self else { return }
+                self.launcher.show()
+                self.launcher.launcherView.runAppCollectionChecks(outputDirectory:URL(fileURLWithPath:args[i+1])) { result in
+                    switch result {
+                    case .success: NSApp.terminate(nil)
+                    case .failure(let error): fputs("\(error.localizedDescription)\n",stderr); exit(1)
+                    }
+                }
+            }
+        } else if let i = args.firstIndex(of:"--editing-page-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+            launcher.onFirstScan = { [weak self] in
+                guard let self = self else { return }
+                self.launcher.show()
+                self.launcher.launcherView.runEditingPageChecks(outputDirectory:URL(fileURLWithPath:args[i+1])) { result in
+                    switch result {
+                    case .success: NSApp.terminate(nil)
+                    case .failure(let error): fputs("\(error.localizedDescription)\n",stderr); exit(1)
+                    }
+                }
+            }
+        } else if let i = args.firstIndex(of:"--outside-click-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
             launcher.onFirstScan = { [weak self] in
                 self?.launcher.runOutsideClickChecks(outputDirectory:URL(fileURLWithPath:args[i+1])) { result in
                     switch result {

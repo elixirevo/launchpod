@@ -168,6 +168,40 @@ public struct LayoutState: Codable, Equatable {
         self = next
         return folder.id
     }
+    /// Move a collected set atomically in pickup order. Destination coordinates
+    /// refer to the original pages, with the selected apps removed from the index.
+    /// Normalize once so empty source pages/folders cannot shift later moves.
+    public mutating func moveApps(_ ids: [String], to destination: ItemLocation, capacity: Int = 35, folderCapacity: Int = 35) throws {
+        guard !ids.isEmpty, Set(ids).count == ids.count,
+              ids.allSatisfy({ app($0) != nil && location(of:$0) != nil }),
+              destination.folderID == nil || folder(destination.folderID!) != nil else {
+            throw LayoutError.invalid(L10n.text("Could not move the selected apps.", "선택한 앱을 이동할 수 없습니다."))
+        }
+        var next = self
+        for id in ids { next.detach(id) }
+        var list = next.pageList(in:destination.folderID)
+        let page = min(max(destination.page,0),list.count)
+        if page == list.count { list.append([]) }
+        list[page].insert(contentsOf:ids,at:min(max(destination.index,0),list[page].count))
+        next.setPages(list,in:destination.folderID)
+        next.normalize(capacity:capacity,folderCapacity:folderCapacity)
+        try next.validate(); self = next
+    }
+    @discardableResult public mutating func makeFolder(withApps ids: [String], over target: String, capacity: Int = 35, folderCapacity: Int = 35) throws -> String {
+        guard !ids.contains(target), !ids.isEmpty, Set(ids).count == ids.count,
+              ids.allSatisfy({ app($0) != nil && location(of:$0) != nil }),
+              app(target) != nil, let location = location(of:target), location.folderID == nil else {
+            throw LayoutError.invalid(L10n.text("Could not group the selected apps.", "선택한 앱을 폴더로 모을 수 없습니다."))
+        }
+        var next = self
+        let group = AppFolder(title:L10n.text("New Folder", "새 폴더"),pages:[[target]+ids])
+        next.pages[location.page][location.index] = group.id
+        for id in ids { next.detach(id) }
+        next.folders.append(group)
+        next.normalize(capacity:capacity,folderCapacity:folderCapacity)
+        try next.validate(); self = next
+        return group.id
+    }
     public mutating func renameFolder(_ id: String, title: String) {
         let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let index = folders.firstIndex(where: { $0.id == id }) else { return }

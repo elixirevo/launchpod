@@ -65,6 +65,18 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
     private var pageAnimationSerial = 0
     private var pageTimingSamples: [String]?
     private var dragID: String?
+    private var collectedAppIDs: [String] = []
+    private var collectionBaseState: LayoutState?
+    private var collectionView: AppCollectionView?
+    private var collectionPoint = NSPoint.zero
+    private var collectionMouseLocation: () -> NSPoint = { NSEvent.mouseLocation }
+    private var collectionConsumesClick = false
+    private var collectionEdgeTimer: Timer?
+    private var collectionEdge = 0
+    private var collectionHoverTimer: Timer?
+    private var collectionHoverID: String?
+    private var collectionGroupReady = false
+    private var collectionEnteredFolder = false
     // Accepted positions belong to the ongoing drag. Persist once on release,
     // so Escape and Undo can still restore the complete original layout.
     private var dragLayout: LayoutState?
@@ -102,7 +114,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
     private var renameAfterDrop: String?
     private let insertionLine = FlippedView()
     private var interaction = InteractionState()
-    var isDraggingItem: Bool { dragID != nil }
+    var isDraggingItem: Bool { dragID != nil || !collectedAppIDs.isEmpty }
     var columns: Int { max(3, min(9, UserDefaults.standard.integer(forKey: "columns") == 0 ? 7 : UserDefaults.standard.integer(forKey: "columns"))) }
     var rows: Int { max(3, min(7, UserDefaults.standard.integer(forKey: "rows") == 0 ? 5 : UserDefaults.standard.integer(forKey: "rows"))) }
     var capacity: Int { columns*rows }
@@ -208,6 +220,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
     }
     func refresh() {
         searchBox.updateState()
+        if let base = collectionBaseState, base != state { cancelAppCollection(); return }
         // A catalog refresh or Undo must not be overwritten by an older drag.
         if let base = dragBaseState, base != state { cancelItemDrag(); return }
         guard !(folderClosing && dragID != nil) else { return }
@@ -216,12 +229,12 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         finishFolderOpening()
         let layout = presentationState
         if let id = interaction.folderID, layout.folder(id) == nil { interaction.folderID = nil }
-        let rootLimit = layout.pages.count-1+(dragID != nil && transientPage?.folderID == nil && transientPage != nil ? 1 : 0)
+        let rootLimit = layout.pages.count-1+(isDraggingItem && transientPage?.folderID == nil && transientPage != nil ? 1 : 0)
         currentPage = max(0, min(currentPage, rootLimit))
         let searching = !interaction.query.isEmpty
         currentResults = searching ? AppSearch.results(for: interaction.query, in: state).map(\.id) : []
         var pages = searching ? chunk(currentResults, capacity) : layout.pages
-        if !searching, dragID != nil, let transient = transientPage, transient.folderID == nil, transient.page == pages.count { pages.append([]) }
+        if !searching, isDraggingItem, let transient = transientPage, transient.folderID == nil, transient.page == pages.count { pages.append([]) }
         currentPage = min(currentPage, max(0, pages.count-1))
         let visible = pages.indices.contains(currentPage) ? pages[currentPage] : []
         buildTiles(visible, in: grid, storage: &tiles)
@@ -229,7 +242,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         pageDots.isHidden = false
         if let f = interaction.folderID.flatMap({ layout.folder($0) }) {
             var pages = f.pages
-            if dragID != nil, let transient = transientPage, transient.folderID == f.id, transient.page == pages.count { pages.append([]) }
+            if isDraggingItem, let transient = transientPage, transient.folderID == f.id, transient.page == pages.count { pages.append([]) }
             folderPage = min(folderPage, max(0, pages.count-1))
             let ids = pages.indices.contains(folderPage) ? pages[folderPage] : []
             buildTiles(ids, in: folderGrid, storage: &folderTiles)
@@ -329,7 +342,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
             reusableTiles.removeObject(forKey:id as NSString)
             tile.content = content; tile.delegate = self; tile.editing = interaction.editing
             if tile.superview == nil { view.addSubview(tile) }
-            tile.isHidden = dragID == id || returnHiddenID == id || dropHiddenIDs.contains(id)
+            tile.isHidden = dragID == id || collectedAppIDs.contains(id) || returnHiddenID == id || dropHiddenIDs.contains(id)
             tile.hiddenMiniatures = dropHiddenMinis[id] ?? []
             tile.alphaValue = 1
             return tile
@@ -541,6 +554,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
                 self.cancelPageTransition(); self.refresh()
                 if let queued = queued { self.changePage(queued.page, insideFolder: queued.inside, allowNew: queued.allowNew) }
                 else if self.dragID != nil { self.updateItemDrag(at:self.lastDragPoint) }
+                else if !self.collectedAppIDs.isEmpty { self.updateAppCollection(at:self.collectionPoint) }
             }
         }
         lastPageTurn = ProcessInfo.processInfo.systemUptime
@@ -643,6 +657,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         for tile in tiles+folderTiles { tile.editing = interaction.editing || held }
     }
     func cancel() {
+        if !collectedAppIDs.isEmpty { cancelAppCollection(); return }
         if folderDrop != nil { finishFolderDrop(); return }
         if dragID != nil { cancelItemDrag(animated:true); return }
         if pageTransition { cancelPageTransition(); refresh(); return }
@@ -916,8 +931,11 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         else { controller?.dismiss() }
     }
     private func visiblePages(insideFolder: Bool) -> [[String]] {
-        if insideFolder { return presentationState.folder(interaction.folderID ?? "")?.pages ?? [[]] }
-        return interaction.query.isEmpty ? presentationState.pages : chunk(currentResults,capacity)
+        var pages = insideFolder ? (presentationState.folder(interaction.folderID ?? "")?.pages ?? [[]])
+            : (interaction.query.isEmpty ? presentationState.pages : chunk(currentResults,capacity))
+        if !collectedAppIDs.isEmpty, let transient = transientPage,
+           transient.folderID == (insideFolder ? interaction.folderID : nil), transient.page == pages.count { pages.append([]) }
+        return pages
     }
     private func recyclePage(_ view: FlippedView) {
         for tile in view.subviews.compactMap({ $0 as? AppTile }) {
@@ -1152,6 +1170,272 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         if event.deltaX != 0 { changePage(requestedPage+(event.deltaX < 0 ? 1 : -1)) }
     }
     override func magnify(with event: NSEvent) { if event.magnification > 0.15 { controller?.dismiss() } }
+    /// Capture Command clicks before AppTile can launch, long-press or start a
+    /// native drag. Mouse-up does not drop the stack; only releasing Command does.
+    func routeAppCollection(_ event: NSEvent) -> Bool {
+        if event.type == .leftMouseUp, collectionConsumesClick {
+            collectionConsumesClick = false; return true
+        }
+        let collecting = !collectedAppIDs.isEmpty
+        let point = convert(event.locationInWindow,from:nil)
+        switch event.type {
+        case .flagsChanged where collecting:
+            if !event.modifierFlags.contains(.command), let window = window {
+                // Modifier events have no reliable mouse coordinates. Read the
+                // pointer independently, including releases outside the window.
+                finishAppCollection(at:convert(window.convertPoint(fromScreen:collectionMouseLocation()),from:nil))
+            }
+            return false
+        case .mouseMoved where collecting, .leftMouseDragged where collecting:
+            // AppKit can synthesize mouse-moved events as views change beneath
+            // the pointer. Key release belongs to flagsChanged, not these events.
+            if event.modifierFlags.contains(.command) { updateAppCollection(at:point) }
+            return true
+        case .keyDown where collecting:
+            if event.keyCode == 53 { cancelAppCollection() }
+            else if event.keyCode == 123 || event.keyCode == 124 {
+                clearCollectionHover()
+                changePage(requestedPage+(event.keyCode == 124 ? 1 : -1),allowNew:event.keyCode == 124)
+            } else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "q" { return false }
+            return true
+        case .rightMouseDown where collecting:
+            cancelAppCollection(); return true
+        case .leftMouseDown:
+            collectionConsumesClick = false
+            if collecting && !event.modifierFlags.contains(.command) {
+                collectionConsumesClick = true; cancelAppCollection(); return true
+            }
+            guard controller?.isShown == true, interaction.editing, event.modifierFlags.contains(.command), dragID == nil else { return false }
+            // Page indicators remain clickable while carrying a stack.
+            let dots = interaction.folderID == nil ? pageDots : folderDots
+            if !dots.isHidden && dots.frame.contains(point) { return false }
+            collectionConsumesClick = true
+            guard !pageTransition, !settlingPage, backgroundGesture == nil, !folderOpening else { return true }
+            finishItemReturn(); finishFolderDrop()
+            let active = interaction.folderID == nil ? tiles : folderTiles
+            if let tile = active.first(where: { !$0.isHidden && $0.interactionFrame.contains($0.convert(point,from:self)) }) {
+                if tile.content.isFolder {
+                    clearCollectionHover(); collectionEnteredFolder = false; openFolder(tile.content.id)
+                } else { collectApp(tile,at:point) }
+            } else if interaction.folderID != nil && !folderPanel.frame.contains(point) {
+                clearCollectionHover(); collectionEnteredFolder = false; closeFolder(animated:false)
+            }
+            if !collectedAppIDs.isEmpty { updateAppCollection(at:point) }
+            return true
+        default: return false
+        }
+    }
+    private func collectApp(_ tile: AppTile, at point: NSPoint) {
+        let id = tile.content.id
+        guard state.app(id) != nil, !collectedAppIDs.contains(id) else { return }
+        let source = convert(tile.iconFrame,from:tile)
+        if collectedAppIDs.isEmpty {
+            collectionBaseState = state
+            collectionView = AppCollectionView(frame:.zero)
+            addSubview(collectionView!)
+            window?.makeFirstResponder(self)
+        }
+        collectedAppIDs.append(id)
+        if interaction.folderID != nil { collectionEnteredFolder = true }
+        selectedID = nil; updateSelection()
+        if !interaction.query.isEmpty {
+            interaction.query = ""; search.stringValue = ""
+            if let location = state.location(of:id) {
+                if let folder = location.folderID { openFolder(folder,page:location.page) }
+                else { currentPage = location.page }
+            }
+        }
+        let size = tile.iconSize
+        collectionView?.setFrameOrigin(NSPoint(x:point.x-size/2+18,y:point.y-size/2+18))
+        collectionView?.update(images:collectedAppIDs.map { tileContent($0).image ?? NSImage(size:NSSize(width:size,height:size)) },iconSize:size,source:source)
+        refresh()
+    }
+    private func clearCollectionHover() {
+        collectionHoverTimer?.invalidate(); collectionHoverTimer = nil
+        collectionHoverID = nil; collectionGroupReady = false
+        for tile in tiles+folderTiles { tile.dropHighlight = false }
+        insertionLine.isHidden = true
+    }
+    func cancelAppCollection() { endAppCollection(refresh:true) }
+    private func endAppCollection(refresh shouldRefresh: Bool) {
+        guard !collectedAppIDs.isEmpty else { return }
+        collectedAppIDs = []; collectionBaseState = nil
+        collectionEnteredFolder = false
+        collectionView?.removeFromSuperview(); collectionView = nil
+        collectionEdgeTimer?.invalidate(); collectionEdgeTimer = nil; collectionEdge = 0
+        clearCollectionHover(); transientPage = nil
+        if shouldRefresh { refresh() }
+    }
+    private func collectionDestination(at point: NSPoint) -> (location: ItemLocation, group: String?)? {
+        guard bounds.contains(point), !isOverDock(point) else { return nil }
+        let inside = interaction.folderID != nil
+        let view = inside ? folderGrid : grid
+        let active = inside ? folderTiles : tiles
+        let dots = inside ? folderDots : pageDots
+        if !dots.isHidden && dots.frame.contains(point) {
+            // Clicking a page dot leaves the pointer below the grid. Releasing
+            // there should place the stack at the end of the selected page.
+            let index = active.filter { !collectedAppIDs.contains($0.content.id) }.count
+            return (ItemLocation(folderID:interaction.folderID,page:inside ? folderPage : currentPage,index:index),nil)
+        }
+        let local = view.convert(point,from:self)
+        let viewport = inside ? folderViewport : gridViewport
+        guard viewport.frame.contains(point), view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        let width = view.bounds.width/CGFloat(columns), height = view.bounds.height/CGFloat(inside ? folderRows : rows)
+        // Page-turn gutters are valid drop locations on the destination page.
+        let column = max(0,min(columns-1,Int(floor(local.x/width))))
+        let row = max(0,min((inside ? folderRows : rows)-1,Int(floor(local.y/height))))
+        let raw = min(row*columns+column,active.count)
+        let hovered = active.indices.contains(raw) ? active[raw] : nil
+        if let tile = hovered, !collectedAppIDs.contains(tile.content.id),
+           tile.iconFrame.insetBy(dx:tile.iconSize*0.18,dy:tile.iconSize*0.08).contains(tile.convert(point,from:self)) {
+            if let folder = state.folder(tile.content.id), var destination = state.endOfFolder(folder.id) {
+                destination.index -= folder.pages[destination.page].filter { collectedAppIDs.contains($0) }.count
+                return (destination,folder.id)
+            }
+            if !inside { return (ItemLocation(page:currentPage,index:raw),tile.content.id) }
+        }
+        let after = hovered != nil && local.x > (CGFloat(column)+0.5)*width ? 1 : 0
+        let index = active.prefix(raw+after).filter { !collectedAppIDs.contains($0.content.id) }.count
+        return (ItemLocation(folderID:interaction.folderID,page:inside ? folderPage : currentPage,index:index),nil)
+    }
+    private func updateAppCollection(at point: NSPoint) {
+        guard !collectedAppIDs.isEmpty else { return }
+        collectionPoint = point
+        if let stack = collectionView {
+            stack.setFrameOrigin(NSPoint(x:point.x-(stack.frame.width-28)/2+18,y:point.y-(stack.frame.height-28)/2+18))
+        }
+        if interaction.folderID != nil && !folderOpening {
+            if folderPanel.frame.insetBy(dx:-35,dy:-35).contains(point) { collectionEnteredFolder = true }
+            else if collectionEnteredFolder {
+                clearCollectionHover(); collectionEnteredFolder = false; closeFolder(animated:false)
+            }
+        }
+        let edge = bounds.contains(point) && !isOverDock(point) ? (point.x < 30 ? -1 : (point.x > bounds.width-30 ? 1 : 0)) : 0
+        if edge != collectionEdge {
+            collectionEdgeTimer?.invalidate(); collectionEdgeTimer = nil; collectionEdge = edge
+            if edge != 0 {
+                collectionEdgeTimer = Timer.scheduledTimer(withTimeInterval:0.75,repeats:true) { [weak self] _ in
+                    guard let self = self, !self.collectedAppIDs.isEmpty, !self.pageTransition, !self.settlingPage else { return }
+                    self.clearCollectionHover()
+                    self.changePage(self.requestedPage+self.collectionEdge,allowNew:self.collectionEdge > 0)
+                }
+                RunLoop.main.add(collectionEdgeTimer!,forMode:.common)
+            }
+        }
+        guard !pageTransition, !settlingPage, backgroundGesture == nil, !folderOpening else { clearCollectionHover(); return }
+        let target = collectionDestination(at:point)?.group
+        if target != collectionHoverID {
+            clearCollectionHover(); collectionHoverID = target
+            if let target = target {
+                if state.folder(target) != nil {
+                    (tiles+folderTiles).first { $0.content.id == target }?.dropHighlight = true
+                } else {
+                    collectionHoverTimer = Timer.scheduledTimer(withTimeInterval:Motion.holdDelay,repeats:false) { [weak self] _ in
+                        guard let self = self, self.collectionHoverID == target, !self.collectedAppIDs.isEmpty else { return }
+                        self.collectionGroupReady = true
+                        self.tiles.first { $0.content.id == target }?.dropHighlight = true
+                    }
+                    RunLoop.main.add(collectionHoverTimer!,forMode:.common)
+                }
+            }
+        }
+    }
+    private func finishAppCollection(at point: NSPoint) {
+        guard !collectedAppIDs.isEmpty else { return }
+        // Preserve the requested page before dismantling its transition. A
+        // scroll's currentPage still names the source until settling finishes.
+        var destinationPage = requestedPage
+        let destinationCount = state.pageList(in:interaction.folderID).count
+        let createPage = queuedPage?.allowNew == true && destinationPage >= destinationCount
+        if let gesture = backgroundGesture, gesture.paging {
+            destinationPage = PageGesture.destination(initialPage:gesture.initialPage,inheritedTarget:gesture.inheritedTarget,
+                translation:Double(gesture.inputTranslation),velocity:Double(gesture.velocity),inputAge:ProcessInfo.processInfo.systemUptime-gesture.lastTime,
+                stride:Double(pageStride(insideFolder:gesture.insideFolder)),pageCount:visiblePages(insideFolder:gesture.insideFolder).count,cancelled:false)
+        }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        cancelPageTransition(); cancelBackgroundPaging(); finishFolderOpening()
+        if createPage {
+            destinationPage = destinationCount
+            transientPage = ItemLocation(folderID:interaction.folderID,page:destinationPage,index:0)
+        }
+        if interaction.folderID == nil { currentPage = destinationPage } else { folderPage = destinationPage }
+        refresh()
+        guard collectionBaseState == state, let target = collectionDestination(at:point) else { cancelAppCollection(); return }
+        let ids = collectedAppIDs
+        let stack = collectionView
+        if let stack = stack {
+            stack.setFrameOrigin(NSPoint(x:point.x-(stack.frame.width-28)/2+18,y:point.y-(stack.frame.height-28)/2+18))
+        }
+        let sourceIcon = stack.map { convert($0.frontIconFrame,from:$0) } ?? NSRect(origin:point,size:.zero)
+        var next = state
+        do {
+            if let group = target.group, state.app(group) != nil, collectionHoverID == group, collectionGroupReady {
+                try next.makeFolder(withApps:ids,over:group,capacity:capacity,folderCapacity:folderCapacity)
+            } else {
+                var destination = target.location
+                // An unarmed app hover is an insertion before that app.
+                if let group = target.group, state.app(group) != nil {
+                    let active = interaction.folderID == nil ? tiles : folderTiles
+                    destination.index = active.prefix { $0.content.id != group }.filter { !ids.contains($0.content.id) }.count
+                }
+                try next.moveApps(ids,to:destination,capacity:capacity,folderCapacity:folderCapacity)
+            }
+            endAppCollection(refresh:false)
+            // Removing a whole source page can shift the destination's index.
+            // Keep the view on the placed apps (or their closed folder).
+            if let landing = next.location(of:ids[0]) {
+                if interaction.folderID == landing.folderID {
+                    if landing.folderID == nil { currentPage = landing.page }
+                    else { folderPage = landing.page }
+                } else if interaction.folderID == nil, let folder = landing.folderID {
+                    currentPage = next.location(of:folder)?.page ?? currentPage
+                }
+            }
+            controller?.mutate(L10n.text("Move apps", "앱 함께 이동")) { $0 = next }
+            // A no-op drop also needs to reveal the original tiles.
+            refresh()
+            guard !Motion.reduced else { return }
+            // Reused AppKit views can replace their backing layers on display.
+            // Install them within this transaction before attaching animations,
+            // so no frame exposes the final position before the flight starts.
+            window?.displayIfNeeded()
+            for tile in tiles+folderTiles where ids.contains(tile.content.id) && !tile.isHidden {
+                guard let layer = tile.layer, let host = tile.superview else { continue }
+                let local = host.convert(NSPoint(x:sourceIcon.midX,y:sourceIcon.midY),from:self)
+                let animation = CABasicAnimation(keyPath:"position")
+                animation.fromValue = NSValue(point:NSPoint(x:local.x+tile.bounds.width*layer.anchorPoint.x-tile.iconFrame.midX,
+                                                            y:local.y+tile.bounds.height*layer.anchorPoint.y-tile.iconFrame.midY))
+                animation.toValue = NSValue(point:layer.position); animation.duration = Motion.returnDuration
+                animation.timingFunction = CAMediaTimingFunction(name:.easeOut)
+                layer.add(animation,forKey:"collectionDrop")
+            }
+            // Apps inside a closed folder have no live tiles. Animate the
+            // pointer stack into that folder instead of making it disappear.
+            if interaction.folderID == nil, let folder = next.location(of:ids[0])?.folderID,
+               let destination = tiles.first(where:{ $0.content.id == folder }), let stack = stack {
+                addSubview(stack)
+                window?.displayIfNeeded()
+                if let layer = stack.layer {
+                    let target = convert(destination.folderIconFrame,from:destination)
+                    let travel = CABasicAnimation(keyPath:"position")
+                    travel.fromValue = NSValue(point:layer.position)
+                    travel.toValue = NSValue(point:NSPoint(x:layer.position.x+target.midX-sourceIcon.midX,
+                                                          y:layer.position.y+target.midY-sourceIcon.midY))
+                    let shrink = CABasicAnimation(keyPath:"transform.scale")
+                    shrink.fromValue = 1; shrink.toValue = target.width/max(1,sourceIcon.width)/3
+                    let fade = CABasicAnimation(keyPath:"opacity"); fade.fromValue = 1; fade.toValue = 0
+                    let flight = CAAnimationGroup(); flight.animations = [travel,shrink,fade]
+                    flight.duration = Motion.returnDuration; flight.timingFunction = CAMediaTimingFunction(name:.easeInEaseOut)
+                    flight.fillMode = .forwards; flight.isRemovedOnCompletion = false
+                    layer.add(flight,forKey:"collectionDrop")
+                }
+                DispatchQueue.main.asyncAfter(deadline:.now()+Motion.returnDuration) { stack.removeFromSuperview() }
+            }
+        } catch { cancelAppCollection(); controller?.report(error) }
+    }
+
     func tilePressed(_ tile: AppTile) { finishFolderDrop(); selectedID = nil; updateSelection() }
     func tileClicked(_ tile: AppTile) { selectedID = nil; updateSelection(); activate(tile.content.id) }
     func tileHeld(_ tile: AppTile) {
@@ -1231,6 +1515,7 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         return dockDragRegion.contains(screenPoint)
     }
     func cancelItemDrag(animated: Bool = false) {
+        cancelAppCollection()
         finishItemReturn()
         finishFolderDrop()
         guard let id = dragID else { return }
@@ -3294,6 +3579,315 @@ final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
         controller.redoLayout()
         try check(state.location(of: ids[0])?.folderID == nil, "layout redo restores extraction")
         print("PASS: \(count) native UI checks; \(state.apps.count) discovered apps")
+    }
+
+    func runAppCollectionChecks(outputDirectory: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let controller = controller, let window = window else { completion(.failure(LayoutError.invalid("No UI window"))); return }
+        var messages: [String] = []
+        var original = LayoutState(), moved = LayoutState()
+        var pointer = NSPoint.zero
+        let previousPointer = collectionMouseLocation
+        collectionMouseLocation = { pointer }
+        var dropSamples: [String:NSPoint] = [:]
+        let ids = (0..<12).map { "collection-\($0)" }
+        let group = "collection-folder"
+        let wait = Motion.pageDuration+0.2
+        func check(_ value: Bool, _ message: String) throws {
+            guard value else { throw LayoutError.invalid("App collection check failed: "+message) }
+            messages.append(message)
+        }
+        func mouse(_ type: NSEvent.EventType, _ point: NSPoint, command: Bool = true) -> NSEvent {
+            pointer = window.convertPoint(toScreen:self.convert(point,to:nil))
+            return NSEvent.mouseEvent(with:type,location:self.convert(point,to:nil),modifierFlags:command ? [.command] : [],
+                timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:0)!
+        }
+        func tile(_ id: String) throws -> AppTile {
+            guard let tile = (self.interaction.folderID == nil ? self.tiles : self.folderTiles).first(where: { $0.content.id == id }) else {
+                throw LayoutError.invalid("Missing collection fixture tile: "+id)
+            }
+            return tile
+        }
+        func point(_ id: String) throws -> NSPoint {
+            let item = try tile(id)
+            return self.convert(NSPoint(x:item.iconFrame.midX,y:item.iconFrame.midY),from:item)
+        }
+        func pick(_ id: String) throws {
+            let p = try point(id)
+            // Assert capture before dispatching a mouse-up: no test can launch an app.
+            try check(self.routeAppCollection(mouse(.leftMouseDown,p)),"Command click is captured: "+id)
+            window.sendEvent(mouse(.leftMouseUp,p))
+        }
+        func release(_ point: NSPoint) {
+            pointer = window.convertPoint(toScreen:self.convert(point,to:nil))
+            // Actual modifier events need not carry the pointer position.
+            window.sendEvent(NSEvent.keyEvent(with:.flagsChanged,location:.zero,modifierFlags:[],
+                timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,characters:"",charactersIgnoringModifiers:"",isARepeat:false,keyCode:55)!)
+        }
+        func reset() {
+            self.cancelAppCollection(); self.cancelPageTransition(); self.cancelBackgroundPaging(); self.closeFolder(animated:false)
+            self.currentPage = 0; self.interaction.editing = true
+            controller.mutate("Reset collection fixture") { $0 = original }; self.refresh()
+        }
+        let steps: [InteractionCheckStep] = [
+            .init(delay:0.8) { [self] in
+                original.apps = ids.enumerated().map { AppRecord(id:$0.element,title:"App \($0.offset+1)",bundleID:"test."+$0.element,path:"",available:false) }
+                original.pages = [Array(ids[0...3]),Array(ids[4...7]),[group,ids[8]]]
+                original.folders = [AppFolder(id:group,title:"Collected apps",pages:[Array(ids[9...11])])]
+                original.didGroupSystemApps = true; original.systemFolderPolicyVersion = 2
+                reset()
+                interaction.editing = false
+                try check(!routeAppCollection(mouse(.leftMouseDown,try point(ids[0]))),"Command collection is disabled outside editing")
+                interaction.editing = true; refresh()
+                try check(!routeAppCollection(mouse(.leftMouseDown,try point(ids[0]),command:false)),"ordinary clicks retain their normal route")
+                try pick(ids[2]); try pick(ids[0]); try pick(ids[2])
+                try check(collectedAppIDs == [ids[2],ids[0]] && collectionView?.count == 2,"pickup order and badge count exclude duplicates")
+                if let badge = collectionView?.subviews.first(where:{ $0.subviews.contains { $0 is NSTextField } }),
+                   let bitmap = badge.bitmapImageRepForCachingDisplay(in:badge.bounds) {
+                    badge.cacheDisplay(in:badge.bounds,to:bitmap)
+                    var whiteRows: [Int] = []
+                    for y in 0..<bitmap.pixelsHigh { for x in 0..<bitmap.pixelsWide {
+                        if let color = bitmap.colorAt(x:x,y:y)?.usingColorSpace(.deviceRGB), color.alphaComponent > 0.9,
+                           min(color.redComponent,color.greenComponent,color.blueComponent) > 0.9 { whiteRows.append(y) }
+                    } }
+                    let center = whiteRows.min().flatMap { first in whiteRows.max().map { Double(first+$0+1)/2 } }
+                    let scale = Double(bitmap.pixelsHigh)/badge.bounds.height
+                    try check(center.map { abs($0-Double(bitmap.pixelsHigh)/2) <= 1.5*scale } == true,"rendered count digits are vertically centered in badge")
+                    try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
+                    try bitmap.representation(using:.png,properties:[:])?.write(to:outputDirectory.appendingPathComponent("badge.png"))
+                } else { try check(false,"badge renders for alignment check") }
+                try check(state == original && (try tile(ids[2])).isHidden && (try tile(ids[0])).isHidden,"pickup hides source tiles without saving layout")
+                let p = NSPoint(x:bounds.midX,y:bounds.midY)
+                window.sendEvent(mouse(.mouseMoved,p))
+                try check(collectionPoint == p && collectionView?.hitTest(p) == nil,"stack follows mouse movement and lets clicks through")
+                try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
+                if let bitmap = bitmapImageRepForCachingDisplay(in:bounds) {
+                    cacheDisplay(in:bounds,to:bitmap)
+                    try bitmap.representation(using:.png,properties:[:])?.write(to:outputDirectory.appendingPathComponent("collected.png"))
+                }
+                changePage(1)
+            },
+            .init(delay:wait) { [self] in
+                try check(currentPage == 1 && collectedAppIDs.count == 2,"stack survives page change")
+                let p = try point(ids[5])
+                window.sendEvent(mouse(.mouseMoved,p)); release(p)
+                try check(state.pages[1] == [ids[4],ids[2],ids[0],ids[5],ids[6],ids[7]],"Command release inserts apps in pickup order")
+                try check(collectedAppIDs.isEmpty && collectionView == nil && interaction.editing,"drop clears stack and keeps editing active")
+            },
+            .init(delay:0.035) {
+                if !Motion.reduced {
+                    for id in [ids[2],ids[0]] {
+                        let layer = try tile(id).layer!
+                        guard let visible = layer.presentation() else { throw LayoutError.invalid("Missing drop presentation") }
+                        try check(layer.animation(forKey:"collectionDrop") != nil && hypot(visible.position.x-layer.position.x,visible.position.y-layer.position.y) > 1,
+                                  "dropped app is visibly in flight after display: "+id)
+                        dropSamples[id] = visible.position
+                    }
+                }
+            },
+            .init(delay:0.07) {
+                if !Motion.reduced {
+                    for id in [ids[2],ids[0]] {
+                        let visible = try tile(id).layer!.presentation()!.position, before = dropSamples[id]!
+                        try check(hypot(visible.x-before.x,visible.y-before.y) > 1,"drop animation moves across rendered frames: "+id)
+                    }
+                }
+            },
+            .init(delay:Motion.returnDuration) { [self] in
+                for id in [ids[2],ids[0]] {
+                    let layer = try tile(id).layer!
+                    let position = layer.presentation()?.position ?? layer.position
+                    try check(hypot(position.x-layer.position.x,position.y-layer.position.y) < 1,"drop animation reaches its destination: "+id)
+                    try check(!Motion.reduced || layer.animation(forKey:"collectionDrop") == nil,"reduced motion omits drop flight: "+id)
+                }
+                moved = state; controller.undoLayout()
+                try check(state == original,"one undo restores entire batch")
+                controller.redoLayout(); try check(state == moved,"one redo restores entire batch")
+                reset(); try pick(ids[1]); cancel()
+                try check(state == original && collectedAppIDs.isEmpty && !(try tile(ids[1])).isHidden && interaction.editing,"Escape restores source without leaving edit mode")
+                try pick(ids[0]); release(NSPoint(x:-20,y:-20))
+                try check(state == original && collectionView == nil,"release outside launcher cancels")
+                // Releasing Command before mouse-up must not activate the source.
+                let p2 = try point(ids[0])
+                try check(routeAppCollection(mouse(.leftMouseDown,p2)),"early-release click captured")
+                release(p2)
+                try check(routeAppCollection(mouse(.leftMouseUp,p2,command:false)),"mouse-up after Command release is consumed")
+                try check(state == original,"dropping at original slot is a no-op")
+                changePage(2)
+            },
+            .init(delay:wait) {
+                try pick(ids[8]); try pick(group)
+            },
+            .init(delay:Motion.folderOpenDuration+0.2) { [self] in
+                try check(interaction.folderID == group && collectedAppIDs == [ids[8]],"Command-click opens a folder while carrying apps (folder=\(interaction.folderID ?? "nil"), count=\(collectedAppIDs.count))")
+                try pick(ids[10]); try pick(ids[9])
+                try check(collectedAppIDs == [ids[8],ids[10],ids[9]],"collection spans root and folder")
+                let outside = NSPoint(x:bounds.midX,y:folderPanel.frame.minY-45)
+                window.sendEvent(mouse(.mouseMoved,outside))
+                try check(interaction.folderID == nil && collectedAppIDs.count == 3,"leaving folder carries collected apps back to root")
+                let p = try point(group); window.sendEvent(mouse(.mouseMoved,p)); release(p)
+                try check(state.folder(group)?.pages.flatMap { $0 } == [ids[11],ids[8],ids[10],ids[9]],"drop on existing folder appends whole collection")
+                try check(Motion.reduced || subviews.contains { $0 is AppCollectionView && $0.layer?.animation(forKey:"collectionDrop") != nil },"closed-folder drop flies into the folder")
+                reset(); try pick(ids[2]); try pick(ids[1])
+                window.sendEvent(mouse(.mouseMoved,try point(ids[0])))
+            },
+            .init(delay:Motion.holdDelay+0.1) { [self] in
+                try check(collectionGroupReady,"dwelling over an app arms folder creation")
+                release(try point(ids[0]))
+                try check(state.folders.contains { $0.pages.flatMap { $0 } == [ids[0],ids[2],ids[1]] },"armed app drop creates one folder in pickup order")
+                reset(); try pick(ids[0]); changePage(state.pages.count,allowNew:true)
+            },
+            .init(delay:wait+0.2) { [self] in
+                try check(currentPage == original.pages.count,"collection can navigate to a new final page")
+                release(convert(NSPoint(x:grid.bounds.width/CGFloat(columns)/2,y:40),from:grid))
+                try check(state.pages.last == [ids[0]],"release persists new page")
+                try check(try controller.store.load() == state,"batch move persists to isolated layout store")
+                reset(); try pick(ids[0]); changePage(1)
+                release(try point(ids[5]))
+                try check(state.pages[1] == [ids[4],ids[0],ids[5],ids[6],ids[7]],"Command release during page animation commits to the destination page")
+                reset(); try pick(ids[0]); changePage(2)
+                release(convert(NSPoint(x:grid.bounds.midX,y:40),from:grid))
+                try check(currentPage == 2 && state.location(of:ids[0])?.page == 2,"release during a multi-page transition keeps the requested page")
+                reset(); try pick(ids[0]); changePage(2,allowNew:true); changePage(3,allowNew:true)
+                release(convert(NSPoint(x:grid.bounds.midX,y:40),from:grid))
+                try check(currentPage == 3 && state.location(of:ids[0])?.page == 3,"release preserves a queued new final page")
+                reset(); try pick(ids[0])
+                scrollWheel(with:scrollCheckEvent(dx:-Int32(bounds.width*0.7),phase:.began))
+                release(convert(NSPoint(x:grid.bounds.midX,y:40),from:grid))
+                try check(currentPage == 1 && state.location(of:ids[0])?.page == 1,"release during an active swipe places apps on the next page")
+                reset(); try pick(ids[0])
+                scrollWheel(with:scrollCheckEvent(dx:-Int32(bounds.width*0.7),phase:.began))
+                scrollWheel(with:scrollCheckEvent(dx:0,phase:.ended))
+                release(convert(NSPoint(x:grid.bounds.midX,y:40),from:grid))
+                try check(currentPage == 1 && state.location(of:ids[0])?.page == 1,"release while a swipe settles keeps its destination")
+                reset(); try pick(ids[0]); changePage(1)
+                var edgePoint = NSPoint(x:bounds.maxX-2,y:gridViewport.frame.midY)
+                if isOverDock(edgePoint) { edgePoint.x = 2 }
+                release(edgePoint)
+                try check(state.location(of:ids[0])?.page == 1,"release in a page-turn gutter stays on the destination page")
+                reset()
+                for id in ids.prefix(4) { try pick(id) }
+                changePage(1); release(try point(ids[5]))
+                try check(currentPage == 0 && state.pages[0] == [ids[4]]+Array(ids.prefix(4))+Array(ids[5...7]),"removing the source page keeps the destination visible")
+                reset(); interaction.query = "App 9"; search.stringValue = interaction.query; refresh()
+                try pick(ids[8])
+                try check(interaction.query.isEmpty && currentPage == 2 && collectedAppIDs == [ids[8]],"picking a search result returns to its original page")
+                reset(); try pick(ids[0])
+                window.sendEvent(mouse(.mouseMoved,NSPoint(x:bounds.maxX-2,y:gridViewport.frame.midY)))
+            },
+            .init(delay:0.75+wait) { [self] in
+                window.sendEvent(mouse(.mouseMoved,NSPoint(x:bounds.midX,y:bounds.midY)))
+                try check(currentPage > 0 && collectedAppIDs == [ids[0]] && collectionEdge == 0 && collectionEdgeTimer == nil,"edge dwell changes page and stops when pointer leaves edge")
+                let dot = convert(pageDots.center(of:1),from:pageDots)
+                window.sendEvent(mouse(.leftMouseDown,dot)); window.sendEvent(mouse(.leftMouseUp,dot))
+            },
+            .init(delay:wait) { [self] in
+                try check(currentPage == 1 && collectedAppIDs == [ids[0]],"page dots remain clickable while collecting")
+                release(convert(pageDots.center(of:1),from:pageDots))
+                try check(state.location(of:ids[0])?.page == 1 && state.pages[1].last == ids[0],"release over the page indicator places apps on the selected page")
+                reset(); try pick(ids[0])
+                controller.mutate("Concurrent layout change") { $0.renameFolder(group,title:"Changed") }
+                try check(collectedAppIDs.isEmpty && state.folder(group)?.title == "Changed","concurrent changes cancel stale collection without overwriting layout")
+                reset(); try pick(ids[0])
+                controller.windowDidResignKey(Notification(name:NSWindow.didResignKeyNotification,object:window))
+                try check(collectedAppIDs.isEmpty && collectionView == nil && state == original,"focus loss cancels collection")
+                try state.validate()
+                let report = "PASS: \(messages.count) app collection checks\n"+messages.joined(separator:"\n")+"\n"
+                print(report)
+                try report.write(to:outputDirectory.appendingPathComponent("checks.txt"),atomically:true,encoding:.utf8)
+            }
+        ]
+        InteractionCheckSequence(steps) { [self] result in
+            collectionMouseLocation = previousPointer; completion(result)
+        }.run()
+    }
+
+    func runEditingPageChecks(outputDirectory: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let controller = controller, let window = window else { completion(.failure(LayoutError.invalid("No UI window"))); return }
+        var messages: [String] = []
+        var original: [AppTile] = [], folderOriginal: [AppTile] = []
+        var rotation: CGFloat = 0
+        let folderID = "editing-page-fixture"
+        let wait = Motion.pageDuration+0.2
+        func check(_ condition: Bool, _ message: String) throws {
+            guard condition else { throw LayoutError.invalid("Editing page check failed: "+message) }
+            messages.append(message)
+        }
+        func checkWiggle(_ list: [AppTile], _ phase: String) throws {
+            try check(!list.isEmpty && list.allSatisfy { tile in
+                tile.editing && tile.subviews.filter { $0.layer?.animation(forKey:"editing") != nil }.count == (Motion.reduced ? 0 : 2)
+            },phase+": editing animations match motion preference")
+        }
+        func iconLayer(_ tile: AppTile) -> CALayer? { tile.subviews.first { $0 is NSImageView }?.layer }
+        let steps: [InteractionCheckStep] = [
+            .init(delay:0.8) { [self] in
+                let apps = Array(state.apps.prefix(4))
+                try check(apps.count == 4,"four installed apps available for isolated fixture")
+                controller.mutate("Editing page fixture") { layout in
+                    layout = LayoutState(); layout.apps = apps
+                    layout.pages = [[apps[0].id,folderID],[apps[1].id]]
+                    layout.folders = [AppFolder(id:folderID,title:"Editing check",pages:[[apps[2].id],[apps[3].id]])]
+                    layout.didGroupSystemApps = true; layout.systemFolderPolicyVersion = 2
+                }
+                original = tiles
+                let tile = tiles[0]
+                tile.mouseDown(with:NSEvent.mouseEvent(with:.leftMouseDown,location:tile.convert(NSPoint(x:tile.iconFrame.midX,y:tile.iconFrame.midY),to:nil),
+                    modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!)
+            },
+            .init(delay:Motion.holdDelay+0.3) { [self] in
+                original[0].mouseUp(with:NSEvent.mouseEvent(with:.leftMouseUp,location:original[0].mouseDownLocation,
+                    modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:0)!)
+                try check(interaction.editing,"long press enters editing")
+                try checkWiggle(tiles,"initial root page")
+                changePage(1)
+            },
+            .init(delay:wait) { [self] in
+                try check(currentPage == 1 && !pageTransition,"right page settles")
+                try checkWiggle(tiles,"right root page")
+                changePage(0)
+            },
+            .init(delay:wait) { [self] in
+                try check(currentPage == 0 && !pageTransition,"return page settles")
+                try check(tiles.count == original.count && zip(tiles,original).allSatisfy { $0 === $1 },"return reuses original app and folder tiles")
+                try checkWiggle(tiles,"returned root page")
+                rotation = iconLayer(tiles[0])?.presentation()?.transform.m12 ?? 0
+            },
+            .init(delay:0.07) { [self] in
+                if !Motion.reduced {
+                    try check(abs((iconLayer(tiles[0])?.presentation()?.transform.m12 ?? 0)-rotation) > 0.0001,"returned icon visibly continues rotating")
+                }
+                openFolder(folderID)
+            },
+            .init(delay:Motion.folderOpenDuration+0.2) { [self] in
+                folderOriginal = folderTiles
+                try checkWiggle(folderTiles,"initial folder page")
+                changePage(1,insideFolder:true)
+            },
+            .init(delay:wait) { [self] in
+                try checkWiggle(folderTiles,"right folder page")
+                changePage(0,insideFolder:true)
+            },
+            .init(delay:wait) { [self] in
+                try check(folderPage == 0 && folderTiles.first === folderOriginal.first,"folder return reuses original tile")
+                try checkWiggle(folderTiles,"returned folder page")
+                cancel()
+                try check(!interaction.editing && folderTiles.allSatisfy { tile in
+                    !tile.editing && tile.subviews.allSatisfy { $0.layer?.animation(forKey:"editing") == nil }
+                },"leaving editing stops animations")
+                closeFolder(animated:false)
+                changePage(1)
+            },
+            .init(delay:wait) { [self] in changePage(0) },
+            .init(delay:wait) { [self] in
+                try check(tiles.allSatisfy { tile in
+                    !tile.editing && tile.subviews.allSatisfy { $0.layer?.animation(forKey:"editing") == nil }
+                },"normal page return does not restart editing")
+                try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
+                let report = "PASS: \(messages.count) editing page checks\n"+messages.joined(separator:"\n")+"\n"
+                try report.write(to:outputDirectory.appendingPathComponent("checks.txt"),atomically:true,encoding:.utf8)
+                print(report)
+            }
+        ]
+        InteractionCheckSequence(steps,completion:completion).run()
     }
 
     func runInteractionChecks(outputDirectory: URL, completion: @escaping (Result<Void, Error>) -> Void) {
