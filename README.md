@@ -8,13 +8,14 @@
 
 **Launchpod** is a native macOS app launcher that brings the familiar Launchpad grid, search, pages, and folders to an independent Swift and AppKit app. It's designed to keep your applications easy to find and organize, with a focus on Apple Silicon Macs running macOS Tahoe 26.
 
-*Version 1.1.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
+*Version 1.2.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
 
 ## ✨ Features
 
 * **Familiar App Grid:** Browse applications across pages with a customizable grid and a blurred desktop wallpaper background.
 * **Instant Search:** Start typing to find applications by name, including apps inside folders.
 * **Drag-and-Drop Organization:** Rearrange apps, move them between pages, and create or rename folders with drag previews and animated placement.
+* **Move Multiple Apps:** In editing mode, hold `Cmd` and click apps to collect them at the pointer. Release `Cmd` to place them together on a page or in a folder.
 * **Smooth Page Navigation:** Switch pages with keyboard shortcuts, page dots, background dragging, or trackpad and Magic Mouse scrolling.
 * **Trackpad Gestures:** Pinch with four or five fingers to open Launchpod and spread to close it. Gesture preferences are configurable in Settings.
 * **Dock & Menu Bar Access:** Open Launchpod from its Dock shortcut, menu bar icon, or a customizable global keyboard shortcut. Drag top-level apps directly to the Dock.
@@ -56,7 +57,7 @@ In **Settings… → Hot corners**, select the corners you want to use. All corn
 
 *Dragging an app to an invalid position or pressing `Esc` during a drag returns it to its original slot. Undo restores layout changes, but does not recover application files moved to the Trash.*
 
-While collecting apps, keep `Cmd` held to switch pages with the arrow keys, page dots, scrolling, or by pausing at a screen edge. `Cmd`-click a folder to collect apps inside it; move outside the folder to return to the main grid. Release over a folder to add the whole stack, or pause over an app until it highlights to create a new folder. `Esc` or releasing outside the grid cancels the collection. Apps are placed in pickup order, and one Undo restores the entire move.
+While collecting apps, keep `Cmd` held to switch pages with the arrow keys, page dots, scrolling, or by pausing at a screen edge. `Cmd`-click a folder to collect apps inside it; move outside the folder to return to the main grid. Release over a folder to add the whole stack, or pause over an app until it highlights to create a new folder. Releasing over the page dots places the apps at the end of the selected page. `Esc` or releasing outside a valid drop area cancels the collection. Apps are placed in pickup order, and one Undo restores the entire move.
 
 Launchpod runs as a menu bar app and hides the menu bar while the launcher is open. On launch or reopen, it adds its Dock shortcut if missing, restarting the Dock once when needed. The shortcut stays after quitting, without a running indicator, and is restored on the next launch if removed.
 
