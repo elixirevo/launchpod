@@ -114,6 +114,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --arch arm64 
 
 Use `build-app.sh` to create the complete app bundle with compiled icons, Sparkle, Sentry (including its privacy manifest) and SwiftPM resource bundles. The local MacAppEssentials dependency must be checked out at `../../tools/library` relative to this repository.
 
+Launchpod scans `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications` and `~/Applications`, plus user-added locations. This includes system utilities such as Keychain Access. Embedded helpers and background-only services remain excluded.
+
 Normal startup leaves Launchpod running in the menu bar without opening the launcher. Click its icon, use the shortcut, or choose Open Launchpod to show it. Required first-run setup and changed terms still appear when needed.
 
 Settings uses MacAppEssentials with **General** first and **Features** second. General contains language, launch at login, optional crash reporting, language reset and feature settings reset; the second page contains grid, icon, layout import/export and app-library controls. Gesture and hot-corner controls use the common Keyboard Shortcuts page. **Keyboard Shortcuts** and **Permissions** use the library’s dedicated pages. Existing shortcut preferences are retained; recording suspends the global shortcut, failed changes retain the previous value, and Clear disables it across launches. **Help & Support** includes offline English/Korean Terms of Use and Privacy Policy, plus contact at `elixirevo@gmail.com`. Reading or saving documents does not record consent. See [legal document maintenance](docs/legal/README.md).

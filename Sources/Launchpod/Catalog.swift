@@ -12,7 +12,9 @@ final class AppCatalog {
     var additionalPaths: [String] { UserDefaults.standard.stringArray(forKey: "additionalAppPaths") ?? [] }
     var roots: [URL] {
         if let configuredRoots = configuredRoots { return configuredRoots }
-        return ["/Applications", "/System/Applications", NSHomeDirectory()+"/Applications"].map { URL(fileURLWithPath: $0) }
+        // User-facing system utilities (including Keychain Access) live here on recent macOS.
+        return ["/Applications", "/System/Applications", "/System/Library/CoreServices/Applications",
+                NSHomeDirectory()+"/Applications"].map { URL(fileURLWithPath: $0) }
         + additionalPaths.map { URL(fileURLWithPath: $0) }
     }
     func scan(previousApps: [AppRecord], completion: @escaping ([AppRecord], Set<String>) -> Void) {
