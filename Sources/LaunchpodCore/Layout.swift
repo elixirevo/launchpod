@@ -6,7 +6,6 @@ public struct AppRecord: Codable, Equatable, Identifiable {
     public var bundleID: String
     public var path: String
     public var available: Bool
-    public var category: String?
     public var iconRevision: Date?
     public init(id: String = UUID().uuidString, title: String, bundleID: String, path: String, available: Bool = true) {
         self.id = id; self.title = title; self.bundleID = bundleID; self.path = path; self.available = available
@@ -226,14 +225,26 @@ public struct LayoutState: Codable, Equatable {
         else { pages.append([id]) }
     }
 
-    /// Apply the expanded utility policy once, then group only newly discovered apps.
+    /// Group only macOS-bundled utilities, then consider newly discovered apps.
     /// Existing folders, hidden apps and subsequent manual moves remain user choices.
     public mutating func groupSystemAppsIfNeeded(capacity: Int = 35, folderCapacity: Int = 35,
                                                 newAppIDs: Set<String> = []) {
         let previousPolicy = systemFolderPolicyVersion ?? 0
         let previouslyGrouped = didGroupSystemApps == true
         groupLegacySystemAppsIfNeeded(capacity: capacity, folderCapacity: folderCapacity)
-        defer { didGroupSystemApps = true; systemFolderPolicyVersion = 3 }
+        defer { didGroupSystemApps = true; systemFolderPolicyVersion = 4 }
+        // Policy 3 also grouped separately installed utilities and bundled tools.
+        // Correct only its tracked automatic folder, leaving other folders untouched.
+        if previousPolicy == 3, let folderID = automaticSystemFolderID,
+           let index = folders.firstIndex(where: { $0.id == folderID }),
+           let position = location(of: folderID) {
+            let excluded = folders[index].pages.flatMap { $0 }.filter { app($0)?.isInitialUtility == false }
+            let excludedIDs = Set(excluded)
+            folders[index].pages = folders[index].pages.map { $0.filter { !excludedIDs.contains($0) } }
+            pages[position.page].insert(contentsOf: excluded, at: position.index + 1)
+            normalize(capacity: capacity, folderCapacity: folderCapacity)
+            if folder(folderID) == nil { automaticSystemFolderID = nil }
+        }
         let eligible = Set(apps.filter { app in
             guard app.available, app.isInitialUtility else { return false }
             if previousPolicy >= 3 { return newAppIDs.contains(app.id) }
@@ -336,19 +347,12 @@ extension AppRecord {
         "com.apple.printcenter", "com.apple.ScreenSharing", "com.apple.Magnifier", "com.apple.ActivityMonitor"
     ]
     public var isInitialUtility: Bool {
-        if category == "public.app-category.utilities" { return true }
-        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
-        let directories = ["/System/Applications/Utilities/", "/System/Library/CoreServices/Applications/",
-                           "/Applications/Utilities/", NSHomeDirectory() + "/Applications/Utilities/"]
-        if directories.contains(where: { canonical.hasPrefix($0) }) { return true }
-        let parts = URL(fileURLWithPath: canonical).pathComponents
-        // Match bundle boundaries, not similarly named ordinary directories.
-        return parts.indices.contains { index in
-            guard parts[index].lowercased().hasSuffix(".app"), index + 3 < parts.count,
-                  parts[index + 1] == "Contents" else { return false }
-            return parts[index + 2] == "Applications"
-                || (index + 4 < parts.count && parts[index + 2] == "Developer" && parts[index + 3] == "Applications")
-        }
+        guard bundleID.hasPrefix("com.apple.") else { return false }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL
+        // These read-only system directories contain the utilities shipped with macOS.
+        // /Applications, user Utilities folders and tools inside Xcode are excluded.
+        return ["/System/Applications/Utilities", "/System/Library/CoreServices/Applications"]
+            .contains(canonical.deletingLastPathComponent().path)
     }
     public var isLegacyInitialUtility: Bool {
         Self.initialUtilityBundleIDs.contains(bundleID)

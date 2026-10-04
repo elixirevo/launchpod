@@ -45,7 +45,8 @@ do {
     try expect(found.contains { $0.path == launchpod.path },"Launchpod itself appears in the catalog")
     try expect(found.count == 3,"embedded helpers, background services, invalid bundles and duplicate roots stay excluded")
     try expect(AppCatalog.discover(roots:[utility]).count == 1,"explicit agent-app path also works")
-    try expect(found.first { $0.path == utility.path }?.category == "public.app-category.utilities", "catalog reads the declared utility category")
+    try expect(found.first { $0.path == utility.path }?.isInitialUtility == false,
+        "a separately installed app declaring Utilities is not a default macOS tool")
     var layout = LayoutState()
     layout.reconcile(found.filter { $0.path == normal.path })
     let existingID = layout.apps[0].id

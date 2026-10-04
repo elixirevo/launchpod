@@ -47,7 +47,6 @@ final class AppCatalog {
                 ?? fm.displayName(atPath: canonical.path).replacingOccurrences(of: ".app", with: "", options: .anchored, range: nil)
             var record = AppRecord(title: title.hasSuffix(".app") ? String(title.dropLast(4)) : title,
                                    bundleID: bundle.bundleIdentifier ?? "", path: canonical.path)
-            record.category = bundle.infoDictionary?["LSApplicationCategoryType"] as? String
             // Installed updates can change artwork without changing its path.
             // Finder custom icons live at the bundle root; include them so
             // selecting an icon also refreshes the launcher grid/search cache.

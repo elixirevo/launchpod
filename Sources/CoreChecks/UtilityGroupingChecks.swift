@@ -2,67 +2,99 @@ import Foundation
 import LaunchpodCore
 
 func runUtilityGroupingChecks(_ expect: (Bool, String) -> Void) throws {
-    func app(_ id: String, _ path: String, category: String? = nil) -> AppRecord {
-        var result = AppRecord(id: id, title: id, bundleID: "test." + id, path: path)
-        result.category = category
-        return result
+    func app(_ id: String, _ path: String, apple: Bool = true) -> AppRecord {
+        AppRecord(id: id, title: id, bundleID: (apple ? "com.apple." : "vendor.") + id, path: path)
     }
     let terminal = AppRecord(id: "terminal", title: "Terminal", bundleID: "com.apple.Terminal", path: "/System/Applications/Utilities/Terminal.app")
     let keychain = app("keychain", "/System/Library/CoreServices/Applications/Keychain Access.app")
+    let archive = app("archive", "/System/Library/CoreServices/Applications/Archive Utility.app")
     let composer = app("composer", "/Applications/Xcode.app/Contents/Applications/Icon Composer.app")
     let simulator = app("simulator", "/Applications/Renamed Xcode.app/Contents/Developer/Applications/Simulator.app")
-    let utility = app("utility", "/Applications/Vendor.app", category: "public.app-category.utilities")
+    let xcode = app("xcode", "/Applications/Xcode.app")
+    let utility = app("utility", "/Applications/Utilities/Vendor.app", apple: false)
     let userTool = app("user", NSHomeDirectory() + "/Applications/Utilities/Tool.app")
-    let ordinary = app("ordinary", "/Applications/Ordinary.app")
-    let tools = [terminal, keychain, composer, simulator, utility, userTool]
-    expect(tools.allSatisfy(\.isInitialUtility), "classify system, bundled, user and declared utilities")
-    expect(!ordinary.isInitialUtility, "ordinary apps remain outside Tools")
+    let notes = app("notes", "/System/Applications/Notes.app")
+    let tools = [terminal, keychain, archive]
+    let excluded = [composer, simulator, xcode, utility, userTool, notes]
+    expect(tools.allSatisfy(\.isInitialUtility), "only macOS-bundled utilities qualify")
+    expect(excluded.allSatisfy { !$0.isInitialUtility }, "installed utilities, Xcode and its tools, and general system apps stay outside Tools")
     expect(!app("fake", "/System/Applications/UtilitiesFake/App.app").isInitialUtility, "utility directory boundaries are exact")
-    expect(!app("fake", "/Applications/Example/Contents/Applications/App.app").isInitialUtility, "embedded tool requires an app bundle ancestor")
-    expect(!app("helper", "/Applications/Xcode.app/Contents/Library/LoginItems/Helper.app").isInitialUtility, "internal helper directories are not tools")
+    expect(!app("fake", "/System/Applications/Utilities/App.app", apple: false).isInitialUtility, "system utility classification requires an Apple identity")
+    expect(!app("nested", "/System/Applications/Utilities/App.app/Contents/Applications/Nested.app").isInitialUtility, "nested tools are not inferred to ship with macOS")
     var fresh = LayoutState()
-    fresh.reconcile(tools + [ordinary], capacity: 4, folderCapacity: 3)
-    fresh.groupSystemAppsIfNeeded(capacity: 4, folderCapacity: 3)
+    fresh.reconcile(tools + excluded, capacity: 4, folderCapacity: 2)
+    fresh.groupSystemAppsIfNeeded(capacity: 4, folderCapacity: 2)
     try fresh.validate()
     let folderID = fresh.automaticSystemFolderID!
-    expect(Set(fresh.folder(folderID)!.pages.flatMap { $0 }) == Set(tools.map(\.id)), "fresh layout groups all utility kinds together")
-    expect(fresh.folder(folderID)!.pages.map(\.count) == [3, 3], "tools paginate at folder capacity")
-    expect(fresh.systemFolderPolicyVersion == 3, "expanded policy version persists")
+    expect(Set(fresh.folder(folderID)!.pages.flatMap { $0 }) == Set(tools.map(\.id)), "fresh Tools folder contains only bundled system utilities")
+    expect(fresh.folder(folderID)!.pages.map(\.count) == [2, 1], "tools paginate at folder capacity")
+    expect(excluded.allSatisfy { fresh.location(of: $0.id)?.folderID == nil }, "fresh default leaves separately installed apps on root pages")
+    expect(fresh.systemFolderPolicyVersion == 4, "restricted policy version persists")
     fresh.renameFolder(folderID, title: "My tools")
-    try fresh.move(composer.id, to: ItemLocation(page: 0, index: 0))
+    try fresh.move(archive.id, to: ItemLocation(page: 0, index: 0))
     fresh.hide(keychain.id)
-    let extra = app("extra", "/Applications/Utilities/Extra.app")
-    fresh.reconcile(tools + [ordinary, extra])
-    fresh.groupSystemAppsIfNeeded(newAppIDs: [extra.id])
-    expect(fresh.location(of: extra.id)?.folderID == folderID, "new utilities join the existing automatic folder")
+    let extra = app("extra", "/System/Applications/Utilities/Extra.app")
+    let installed = app("installed", "/Applications/Utilities/Installed.app")
+    fresh.reconcile(tools + excluded + [extra, installed])
+    fresh.groupSystemAppsIfNeeded(newAppIDs: [extra.id, installed.id])
+    expect(fresh.location(of: extra.id)?.folderID == folderID, "new system utilities join the automatic folder")
+    expect(fresh.location(of: installed.id)?.folderID == nil, "new user-installed tools stay outside the automatic folder")
     expect(fresh.folder(folderID)?.title == "My tools", "renamed automatic folder keeps its name")
-    expect(fresh.location(of: composer.id)?.folderID == nil, "rescan respects manually extracted utilities")
+    expect(fresh.location(of: archive.id)?.folderID == nil, "rescan respects manually extracted system utilities")
     expect(fresh.hidden.contains(keychain.id), "rescan respects hidden utilities")
     let restored = try JSONDecoder().decode(LayoutState.self, from: JSONEncoder().encode(fresh))
     var rescanned = restored
     rescanned.groupSystemAppsIfNeeded()
     expect(rescanned == restored, "save/reload does not repeat default grouping")
-    expect(restored.app(utility.id)?.category == utility.category, "utility classification survives persistence")
 
     var upgrade = LayoutState()
-    upgrade.reconcile([terminal, keychain, composer, simulator, ordinary])
-    let existing = try upgrade.makeFolder(with: keychain.id, over: ordinary.id, title: "Personal")
+    upgrade.reconcile(tools + excluded)
+    let existing = try upgrade.makeFolder(with: keychain.id, over: notes.id, title: "Personal")
     upgrade.hide(simulator.id)
     upgrade.didGroupSystemApps = true
     upgrade.systemFolderPolicyVersion = 2
     upgrade.groupSystemAppsIfNeeded()
     try upgrade.validate()
-    expect(upgrade.location(of: terminal.id)?.folderID == nil, "upgrade preserves an old-policy utility moved out by the user")
+    expect(upgrade.location(of: terminal.id)?.folderID == nil, "upgrade preserves old-policy utilities moved out by the user")
     expect(upgrade.location(of: keychain.id)?.folderID == existing, "upgrade preserves custom folders")
     expect(upgrade.hidden == [simulator.id], "upgrade preserves hiding")
-    expect(upgrade.location(of: composer.id)?.folderID == upgrade.automaticSystemFolderID && upgrade.automaticSystemFolderID != nil, "upgrade groups newly classified loose tools even when only one exists")
+    expect(upgrade.location(of: archive.id)?.folderID == upgrade.automaticSystemFolderID && upgrade.automaticSystemFolderID != nil, "upgrade groups newly classified macOS tools")
+    expect(upgrade.location(of: composer.id)?.folderID == nil, "upgrade never groups Xcode tools")
+
+    var broad = LayoutState()
+    broad.reconcile(tools + excluded)
+    let auto = try broad.makeFolder(with: composer.id, over: terminal.id, title: "Tools")
+    try broad.move(utility.id, to: broad.endOfFolder(auto)!)
+    let personal = try broad.makeFolder(with: simulator.id, over: notes.id, title: "Development")
+    broad.automaticSystemFolderID = auto
+    broad.didGroupSystemApps = true
+    broad.systemFolderPolicyVersion = 3
+    broad.hide(keychain.id)
+    broad.groupSystemAppsIfNeeded()
+    try broad.validate()
+    expect(broad.folder(auto)?.pages.flatMap { $0 } == [terminal.id], "repair removes non-system apps from the tracked automatic folder")
+    expect([composer, utility].allSatisfy { broad.location(of: $0.id)?.folderID == nil }, "mistakenly grouped tools return to root pages")
+    expect(broad.location(of: simulator.id)?.folderID == personal, "repair preserves manually created folders")
+    expect(broad.hidden == [keychain.id], "repair preserves hiding")
+    let repaired = broad
+    broad.groupSystemAppsIfNeeded()
+    expect(broad == repaired, "broad-policy repair runs only once")
+
+    try broad.move(composer.id, to: broad.endOfFolder(auto)!)
+    broad.groupSystemAppsIfNeeded()
+    expect(broad.location(of: composer.id)?.folderID == auto, "later manual placement in Tools remains allowed")
+    var onlyInstalled = LayoutState()
+    onlyInstalled.reconcile([composer, utility])
+    onlyInstalled.automaticSystemFolderID = try onlyInstalled.makeFolder(with: composer.id, over: utility.id, title: "Tools")
+    onlyInstalled.didGroupSystemApps = true
+    onlyInstalled.systemFolderPolicyVersion = 3
+    onlyInstalled.groupSystemAppsIfNeeded()
+    try onlyInstalled.validate()
+    expect(onlyInstalled.folders.isEmpty && onlyInstalled.automaticSystemFolderID == nil,
+        "repair safely removes an automatic folder containing only installed apps")
 
     var singleton = LayoutState()
     singleton.reconcile([terminal])
     singleton.groupSystemAppsIfNeeded()
-    expect(singleton.location(of: terminal.id)?.folderID != nil, "a lone utility receives the default folder")
-    var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ordinary)) as! [String: Any]
-    legacy.removeValue(forKey: "category")
-    let decoded = try JSONDecoder().decode(AppRecord.self, from: JSONSerialization.data(withJSONObject: legacy))
-    expect(decoded.category == nil, "old app records decode without category metadata")
+    expect(singleton.location(of: terminal.id)?.folderID != nil, "a lone system utility receives the default folder")
 }
