@@ -1,14 +1,14 @@
 # Launchpod 🚀
 
 ![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)
-![Swift](https://img.shields.io/badge/Swift-5.7%2B-orange.svg)
+![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple_Silicon-blue.svg)
 
 <img src="./icon.png" alt="Launchpod Icon" width="160" />
 
 **Launchpod** is a native macOS app launcher that brings the familiar Launchpad grid, search, pages, and folders to an independent Swift and AppKit app. It's designed to keep your applications easy to find and organize, with a focus on Apple Silicon Macs running macOS Tahoe 26.
 
-*Version 1.2.0. Requires macOS 12.0 or later and Apple Silicon (arm64).*
+*Version 1.2.0. Requires macOS 13.0 or later and Apple Silicon (arm64).*
 
 ## ✨ Features
 
@@ -23,7 +23,7 @@
 * **Layout Migration:** Import a supported legacy Launchpad layout, or export and import JSON layouts between Macs.
 * **Undo & Redo:** Undo and redo layout changes while organizing your apps.
 * **App Management:** Open apps, reveal them in Finder, hide them, or move eligible apps to the Trash after confirmation. Removed apps are cleared from the catalog on the next scan.
-* **Personalization:** Choose an app icon, adjust the grid, and switch between English and Korean. English is the default language.
+* **Personalization:** Choose an app icon, adjust the grid, and switch between English and Korean. Existing language choices are preserved; language changes apply on the next launch.
 * **Native Implementation:** Built with Swift and AppKit, with cached app icons and SQLite support for legacy layout imports.
 
 ## ⌨️ Shortcuts & Controls
@@ -53,13 +53,13 @@
 
 *Right-click the menu bar icon and choose **Settings…** to change the global shortcut, grid, language, icon, and gesture preferences.*
 
-In **Settings… → Hot corners**, select the corners you want to use. All corners are off by default. To avoid two actions running together, set those same corners to **“–”** in **System Settings → Desktop & Dock → Hot Corners**. Launchpod must remain running; it does not change macOS hot corner settings. Move away from a corner before using it again. Hot corners do not activate during a mouse drag.
+In **Settings… → Keyboard Shortcuts → Hot corners**, select the corners you want to use. All corners are off by default. To avoid two actions running together, set those same corners to **“–”** in **System Settings → Desktop & Dock → Hot Corners**. Launchpod must remain running; it does not change macOS hot corner settings. Move away from a corner before using it again. Hot corners do not activate during a mouse drag.
 
 *Dragging an app to an invalid position or pressing `Esc` during a drag returns it to its original slot. Undo restores layout changes, but does not recover application files moved to the Trash.*
 
 While collecting apps, keep `Cmd` held to switch pages with the arrow keys, page dots, scrolling, or by pausing at a screen edge. `Cmd`-click a folder to collect apps inside it; move outside the folder to return to the main grid. Release over a folder to add the whole stack, or pause over an app until it highlights to create a new folder. Releasing over the page dots places the apps at the end of the selected page. `Esc` or releasing outside a valid drop area cancels the collection. Apps are placed in pickup order, and one Undo restores the entire move.
 
-Launchpod runs as a menu bar app and hides the menu bar while the launcher is open. On launch or reopen, it adds its Dock shortcut if missing, restarting the Dock once when needed. The shortcut stays after quitting, without a running indicator, and is restored on the next launch if removed.
+Launchpod runs as a menu bar app and hides the menu bar while the launcher is open. After required agreement and setup, on launch or reopen it adds its Dock shortcut if missing, restarting the Dock once when needed. The shortcut stays after quitting, without a running indicator, and is restored on the next launch if removed.
 
 ## 🚀 Installation & Build
 
@@ -76,7 +76,7 @@ To build from source, Launchpod uses a build script and Swift Package Manager. N
 ### Prerequisites
 
 * An Apple Silicon Mac (arm64)
-* macOS 12.0 or later
+* macOS 13.0 or later
 * Full Xcode with support for Icon Composer (`.icon`) assets; Command Line Tools alone are not sufficient
 * Python 3, used by the build configuration script
 * An internet connection for SwiftPM to download Sparkle 2.10.0 on the first build
@@ -108,15 +108,41 @@ The default build uses ad-hoc signing and is not Developer ID signed or notarize
 For development, you can also build the SwiftPM executable and run the core checks:
 
 ```bash
-swift build --arch arm64
-swift run --arch arm64 CoreChecks
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --arch arm64
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --arch arm64 CoreChecks
 ```
 
-Use `build-app.sh` to create the complete app bundle with compiled icons and the Sparkle framework.
+Use `build-app.sh` to create the complete app bundle with compiled icons, Sparkle, Sentry (including its privacy manifest) and SwiftPM resource bundles. The local MacAppEssentials dependency must be checked out at `../../tools/library` relative to this repository.
+
+Settings uses MacAppEssentials with **General** first and **Features** second. General contains language, launch at login, optional crash reporting and language reset; the second page contains grid, icon, layout import/export and app-library controls. Gesture and hot-corner controls use the common Keyboard Shortcuts page. **Keyboard Shortcuts** and **Permissions** use the library’s dedicated pages. Existing shortcut preferences are retained; recording suspends the global shortcut, failed changes retain the previous value, and Clear disables it across launches. **Help & Support** includes offline English/Korean Terms of Use and Privacy Policy, plus contact at `elixirevo@gmail.com`. Reading or saving documents does not record consent. See [legal document maintenance](docs/legal/README.md).
+
+Sentry crash reporting is **off by default** and changes in **General → Diagnostics** take effect after restarting. Only fatal crashes and unhandled exceptions are reported through `MacAppDiagnosticsSentry`; usage/session/performance tracking, network-error capture, logs and replay are disabled. Preview and isolated check runs never initialize Sentry. The public `SentryConfiguration.json` belongs to this app; management tokens stay in the developer keychain or CI secrets. See [Sentry maintenance](docs/sentry.md).
+
+## First-run setup
+
+The library’s `MacAppOnboarding` presents six steps: welcome, opening Launchpod, organizing apps, versioned Terms of Use agreement, Accessibility permission, and optional crash reports. It shares the permission and reporting models with Settings. Reading terms does not record agreement. The terms checkbox and explicit Agree action save a separate local receipt; completing setup never grants OS permissions or enables crash reporting.
+
+Only **Finish** saves `Launchpod.onboarding.completedVersion` (flow version 1). Before terms agreement, closing or choosing Quit exits without enabling app features. After agreement, **Set Up Later** or closing the window opens the launcher without marking setup complete. The next launch or Finder/Dock reopen shows unfinished setup again; reopening in the same process keeps its current step. Existing users without a completion record see setup once as well. Existing completion records are preserved and never treated as terms acceptance; those users get only the required terms window when agreement is missing or the terms version changes. Layouts, shortcuts, consent and other preferences are preserved. Completed setup is not shown automatically unless the onboarding version changes. Settings → Help & Support → Getting Started → Show Introduction… reopens it from the first page without resetting completion or terms acceptance.
+
+Run `scripts/check-onboarding.sh` after building to test versioned terms migration, startup gating, completion, deferral, persistence failures and the six pages in English/Korean and light/dark appearance. An interactive preview is available without live permission requests, telemetry or completion writes:
+
+```sh
+dist/Launchpod.app/Contents/MacOS/Launchpod --data-dir /tmp/launchpod-onboarding-preview --preview-onboarding
+```
+
+The organizing guide includes English/Korean screenshots of the actual launcher with a demo layout of system apps. To regenerate them after UI changes, build first and run the following for each language (`en`/`ko`). The capture uses an isolated layout and a neutral backdrop; it does not include personal apps or the desktop picture.
+
+```sh
+dist/Launchpod.app/Contents/MacOS/Launchpod -MacAppLibrary.language ko -columns 3 -rows 3 \
+  --windowed --data-dir "$(mktemp -d)" \
+  --onboarding-artwork "$PWD/Sources/Launchpod/Resources/Onboarding/organize.ko.png"
+```
+
+Rebuild after generating the screenshots to bundle the updated images.
 
 ## 🔒 Permissions
 
-**Accessibility** permission is required for trackpad gestures. Launchpod prompts for it at startup when gestures are enabled and permission is missing. Enable Launchpod in **System Settings → Privacy & Security → Accessibility**, or open that pane from Settings inside the app.
+**Accessibility** permission is required for trackpad gestures. First-run setup explains it, and a request runs only after you choose the permission action. Skipping setup does not trigger another startup permission prompt. Enable Launchpod in **System Settings → Privacy & Security → Accessibility**, or open that pane from **Settings → Permissions** using the shared permission explanation.
 
 Layouts are stored locally at `~/Library/Application Support/Launchpod/layout.json`, with the previous valid layout saved as `layout.previous.json`. Shortcut and grid preferences are stored in UserDefaults. Importing a legacy layout does not modify the original Launchpad database.
 
@@ -125,7 +151,7 @@ Layouts are stored locally at `~/Library/Application Support/Launchpod/layout.js
 To move an existing Launchpad layout to a new Mac:
 
 1. Run Launchpod on an Apple Silicon Mac that still has the original Launchpad.
-2. Open **Settings… → Import This Mac’s Layout…**, review the result, and apply it.
+2. Open **Settings… → Features → Import This Mac’s Layout…**, review the result, and apply it.
 3. Use **Export…** to save the layout as JSON.
 4. On the destination Mac, use **Import…** to load that JSON file.
 
@@ -171,7 +197,7 @@ dist/Launchpod.app/Contents/MacOS/Launchpod --windowed \
 
 Add `--reduce-motion` to check reduced animations without changing system preferences. `--preview-output /path/to/preview.png` saves a preview of the app and exits. Always use a separate `--data-dir` with test options.
 
-`--hot-corner-settings-checks /path/to/results` (with a separate `--data-dir`) checks corner selection, persistence, monitor lifecycle, and English/Korean settings layouts. It captures both ends of the scrollable settings window without changing system hot corners or posting mouse input. The core checks also cover corner entry, repeat suppression, dragging, and display coordinates.
+`--hot-corner-settings-checks /path/to/results` (with a separate `--data-dir`) checks corner selection, persistence, monitor lifecycle, and English/Korean settings layouts. It captures the Launchpod settings page without changing system hot corners or posting mouse input. Run `scripts/check-languages.sh` for English/Korean, light/dark minimum-size settings and legal-document checks. The core checks also cover corner entry, repeat suppression, dragging, and display coordinates.
 
 `--outside-click-checks /path/to/results` (with a separate `--data-dir`) verifies dismissal without key focus, focus retention, reopening, and event-monitor teardown using in-memory outside-click events.
 
@@ -180,3 +206,15 @@ Add `--reduce-motion` to check reduced animations without changing system prefer
 `--app-collection-checks /path/to/results` (with a separate `--data-dir`) checks Command-click collection, pointer following, page and folder moves, grouping, cancellation, and batch undo/redo. It uses an isolated fixture and never launches apps. Run again with `--reduce-motion` to check reduced animations.
 
 See [App icon resources](Resources/README.md) for the Icon Composer assets and how they are bundled.
+
+## MacAppEssentials 0.5.0 integration
+
+The local dependency at `../../tools/library` uses `v0.5.0` plus the Features-tab and login-item fixes (`0e60a18`). The login-item first-registration fix means a main-app `notFound` status leaves the toggle available, and registration errors are shown after an explicit user attempt. It adds the shared Help & Support onboarding review action, alongside versioned terms acceptance, bundled support documents and `shortcutsContent`. The second Features tab uses the package example’s sky-blue monitor icon and retains the existing `launchpod` page ID. Grid/icon/layout controls remain there; gestures and hot corners are on Keyboard Shortcuts above the shared recorder. Terms/privacy remain read-only under Help & Support.
+
+The app-lifetime onboarding host handles `showForReview()` from Help & Support. Repeated clicks focus the existing review window; closing and reopening starts a fresh review. Review completion does not overwrite saved completion or rerun app startup callbacks.
+
+`AppStartup` owns the agreement shared by first-run onboarding and the standalone terms-update window. The launcher/catalog, Dock registration, global shortcuts/gestures, Sparkle and Sentry SDK start only after the required agreement is stored and optional setup is finished or deferred. Sentry still uses the reporting preference captured at process launch; enabling it during setup applies on restart. Terms version 1.3 is independent of onboarding version 1 and app releases. The local receipt stores document ID/version/language/hash/time under `Launchpod.terms.acceptance` and is preserved by ordinary settings reset. Read failures, missing documents and failed writes keep features blocked.
+
+For an isolated, memory-only preview of the upgrade path, use `--data-dir /tmp/launchpod-terms-preview --preview-terms`. Use `--preview-onboarding` for the first-run path. Neither preview initializes reporting or stores real agreement receipts. Previous legal text is archived in `docs/legal/archive/1.2`.
+
+MacAppEssentials 0.5.0 is GPL-3.0-only. Its license and scope notices are bundled under `Contents/Resources/Licenses`; external SDK licenses remain separate. This dependency update does not assign a new license to unrelated app-owned files.

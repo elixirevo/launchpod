@@ -1,0 +1,17 @@
+# MacAppEssentials licensing
+
+Copyright (C) 2026 elixirevo
+
+Project-owned source code, examples, integration adapters, scripts and documentation
+in this checkout are licensed under the GNU General Public License, version 3 only
+(SPDX: GPL-3.0-only). See LICENSE for the unchanged license text.
+
+MacAppEssentials is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3. It is distributed without any warranty, including the
+implied warranties of merchantability or fitness for a particular purpose.
+
+External dependencies retain their own copyrights and licenses. This grant does
+not relicense Sentry Cocoa, Sparkle or other third-party material. Preserve their
+license notices when distributing them. This notice does not grant trademark
+rights or imply endorsement of modified products.

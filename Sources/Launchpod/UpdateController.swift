@@ -7,6 +7,16 @@ import Sparkle
 final class UpdateController: NSObject, NSMenuItemValidation, SPUStandardUserDriverDelegate {
     private var controller: SPUStandardUpdaterController?
     var beforeShowingUpdate: (() -> Void)?
+    var onSettingsChanged: (@MainActor () -> Void)?
+    private var settingsObservations: [NSKeyValueObservation] = []
+
+    var isAvailable: Bool { controller != nil }
+    var canCheck: Bool { controller?.updater.canCheckForUpdates ?? false }
+    var automaticChecks: Bool {
+        get { controller?.updater.automaticallyChecksForUpdates ?? false }
+        set { controller?.updater.automaticallyChecksForUpdates = newValue }
+    }
+    func check() { checkForUpdates(nil) }
 
     static func isConfigured(_ info: [String: Any]) -> Bool {
         guard let feed = info["SUFeedURL"] as? String,
@@ -24,9 +34,19 @@ final class UpdateController: NSObject, NSMenuItemValidation, SPUStandardUserDri
               Self.isConfigured(bundle.infoDictionary ?? [:]) else { return }
         let controller = SPUStandardUpdaterController(startingUpdater: false,
             updaterDelegate: nil, userDriverDelegate: self)
+        // Do not offer or send Sparkle's optional system profile.
+        controller.updater.sendsSystemProfile = false
         do {
             try controller.updater.start()
             self.controller = controller
+            settingsObservations = [
+                controller.updater.observe(\.automaticallyChecksForUpdates, options: [.new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { self?.onSettingsChanged?() }
+                },
+                controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { self?.onSettingsChanged?() }
+                }
+            ]
         } catch {
             NSLog("Launchpod: updater could not start: %@", error.localizedDescription)
         }

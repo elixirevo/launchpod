@@ -46,6 +46,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
     private var settingsController: SettingsController?
     private var scanAgain = false
     var onFirstScan: (() -> Void)?
+    var canUseApp: () -> Bool = { true }
 
     override init() {
         let args = CommandLine.arguments
@@ -114,6 +115,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
         }
     }
     func rescan() {
+        guard canUseApp() else { return }
         guard !loadFailed else { return }
         if isScanning { scanAgain = true; return }
         isScanning = true
@@ -149,6 +151,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
         }
     }
     func mutate(_ name: String, _ operation: (inout LayoutState) throws -> Void) {
+        guard canUseApp() else { return }
         guard !loadFailed else { return }
         launcherView.finishFolderDrop()
         do {
@@ -191,6 +194,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
         menuTransition.prepare(screen:screen,image:wallpaper(for:screen),opacity:1,blocksMenuInteraction:true)
     }
     func show(on screen: NSScreen? = nil) {
+        guard canUseApp() else { return }
         guard !isShown else { return }
         openingScreen = screen
         let fromHidden = !window.isVisible
@@ -338,6 +342,7 @@ final class LauncherController: NSObject, NSWindowDelegate {
         wallpapers.snapshot(for:screen,refresh:refresh)?.image
     }
     func launch(_ app: AppRecord) {
+        guard canUseApp() else { return }
         let url = URL(fileURLWithPath: app.path)
         guard app.available, !app.path.isEmpty, FileManager.default.fileExists(atPath: app.path) else {
             report(LayoutError.invalid(L10n.text("\(app.title) could not be found. Reinstall the app or add its location.", "\(app.title) 앱을 찾을 수 없습니다. 앱을 다시 설치하거나 위치를 추가해 주세요."))); return
@@ -413,10 +418,13 @@ final class LauncherController: NSObject, NSWindowDelegate {
         catalog.startWatching(appPaths:state.apps.map(\.path)); rescan()
     }
     @objc func showSettings() {
-        if settingsController == nil { settingsController = SettingsController(launcher: self) }
-        dismiss(restoreFocus: false)
-        settingsController?.showWindow(nil); settingsController?.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        guard canUseApp() else { return }
+        // AppKit selectors and launcher callbacks enter on the main thread.
+        MainActor.assumeIsolated {
+            if settingsController == nil { settingsController = SettingsController(launcher: self) }
+            dismiss(restoreFocus: false)
+            settingsController?.showWindow(nil)
+        }
     }
     func importLegacy(_ url: URL) {
         do {

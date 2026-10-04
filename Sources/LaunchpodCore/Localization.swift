@@ -17,7 +17,9 @@ public enum L10n {
         AppLanguage(rawValue: defaults.string(forKey: preferenceKey) ?? "") ?? .english
     }
 
-    public static var language: AppLanguage { language(in: defaults) }
+    /// The application injects MacAppCore's process-wide language; standalone checks retain their isolated store.
+    public static var activeLanguage: (() -> AppLanguage)?
+    public static var language: AppLanguage { activeLanguage?() ?? language(in: defaults) }
 
     public static func select(_ language: AppLanguage, defaults: UserDefaults? = nil) {
         (defaults ?? self.defaults).set(language.rawValue, forKey: preferenceKey)

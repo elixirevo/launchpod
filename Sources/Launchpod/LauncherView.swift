@@ -2,6 +2,52 @@ import AppKit
 import QuartzCore
 import LaunchpodCore
 
+extension LauncherView {
+    /// Reproducible screenshot of the real launcher, using only a throwaway layout and system apps.
+    func captureOnboardingArtwork(to url: URL, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard CommandLine.arguments.contains("--data-dir"), CommandLine.arguments.contains("--windowed"),
+              columns == 3, rows == 3, let controller else {
+            completion(.failure(CocoaError(.validationMissingMandatoryProperty))); return
+        }
+        let samples = [("Calendar", "캘린더"), ("Notes", "메모"), ("Calculator", "계산기"), ("Reminders", "미리 알림"), ("Preview", "미리보기")]
+        let apps = samples.compactMap { name, korean -> AppRecord? in
+            let path = "/System/Applications/\(name).app"
+            guard let bundleID = Bundle(path: path)?.bundleIdentifier else { return nil }
+            return AppRecord(id: bundleID, title: L10n.text(name, korean), bundleID: bundleID, path: path)
+        }
+        guard apps.count == samples.count else { completion(.failure(CocoaError(.fileNoSuchFile))); return }
+        var fixture = LayoutState(); fixture.apps = apps
+        let folder = AppFolder(id: "onboarding.utilities", title: L10n.text("Utilities", "유틸리티"), pages: [Array(apps.dropFirst(2).map(\.id))])
+        fixture.folders = [folder]; fixture.pages = [[apps[0].id, apps[1].id, folder.id]]
+        fixture.didGroupSystemApps = true; fixture.systemFolderPolicyVersion = 2
+        controller.mutate("Onboarding artwork fixture") { $0 = fixture }
+        controller.window.setContentSize(NSSize(width: 900, height: 660))
+        controller.show()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+            // A queued catalog refresh can finish while the icons load. Restore the
+            // sample immediately before capture so no discovered apps enter the image.
+            controller.mutate("Onboarding artwork fixture") { $0 = fixture }
+            // Set a neutral backdrop before capture; never include the user's desktop picture.
+            wallpaper.image = nil
+            layer?.backgroundColor = NSColor(srgbRed: 0.09, green: 0.13, blue: 0.20, alpha: 1).cgColor
+            layoutSubtreeIfNeeded()
+            guard let first = tiles.first else { completion(.failure(CocoaError(.fileReadUnknown))); return }
+            let bottom = convert(first.bounds, from: first).maxY + 12
+            let region = NSRect(x: 0, y: 0, width: bounds.width, height: bottom)
+            guard let bitmap = bitmapImageRepForCachingDisplay(in: region) else {
+                completion(.failure(CocoaError(.fileWriteUnknown))); return
+            }
+            cacheDisplay(in: region, to: bitmap)
+            do {
+                guard let data = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url)
+                completion(.success(()))
+            } catch { completion(.failure(error)) }
+        }
+    }
+}
+
 final class LauncherView: FlippedView, NSTextFieldDelegate, TileDelegate {
     weak var controller: LauncherController?
     private let wallpaper = NSImageView()

@@ -4,40 +4,108 @@
 
 import AppKit
 import LaunchpodCore
+import MacAppCore
+import MacAppSettings
+import MacAppOnboarding
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     var launcher: LauncherController!
     private var statusItem: NSStatusItem!
     private let statusMenu = NSMenu()
-    private var updates: UpdateController!
+    private(set) var updates: UpdateController!
+    private(set) var diagnostics: AppDiagnostics!
+    private(set) var permissions: AppPermissions!
+    private(set) var startup: AppStartup?
+    var onboarding: AppOnboarding? { startup?.onboarding }
+    private var featuresStarted = false
+    private var isolatedChecks = false
+    private var allowsAppFeatures: Bool { featuresStarted && (isolatedChecks || startup?.allowsAppUse == true) }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let args = CommandLine.arguments
+        let isolated = args.contains("--data-dir") || args.contains("--preview-output")
+        let preview = isolated && (args.contains("--preview-onboarding") || args.contains("--preview-terms"))
+        isolatedChecks = isolated && !preview
+        permissions = preview ? AppPermissions.preview() : AppPermissions()
+        diagnostics = AppDiagnostics(isolated: isolated)
+        diagnostics.prepare()
+        if isolatedChecks { startLauncher(); return }
+        // No launcher/catalog, global input listener, updater, SDK or Dock mutation before agreement.
+        let menu = NSMenu(), item = NSMenuItem(), appMenu = NSMenu()
+        item.submenu = appMenu; menu.addItem(item)
+        appMenu.addItem(NSMenuItem(title: L10n.text("Quit Launchpod", "Launchpod 종료"),
+            action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let editItem = NSMenuItem(), editMenu = NSMenu(title: L10n.text("Edit", "편집"))
+        editItem.submenu = editMenu; menu.addItem(editItem)
+        editMenu.addItem(NSMenuItem(title: L10n.text("Copy", "복사"), action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("Select All", "모두 선택"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        NSApp.mainMenu = menu
+        configureStartup(preview: preview)
+    }
+
+    @MainActor private func configureStartup(preview: Bool) {
+        do {
+            var receipt: TermsAcceptance?
+            let icons = AppIconSettings()
+            startup = try AppStartup(identity: SettingsIdentity(icon: icons.image(for: icons.choice)),
+                permissions: permissions.settings, reporting: diagnostics.service == nil ? nil : diagnostics.preference,
+                acceptanceStore: preview ? .init(read: { receipt }, write: { receipt = $0 }) : nil,
+                onboardingStore: preview ? .init(readCompletedVersion: {
+                    CommandLine.arguments.contains("--preview-terms") ? AppOnboarding.version : 0
+                }, writeCompletedVersion: { _ in }) : nil,
+                autosavePrefix: preview ? "Launchpod.Preview" : "Launchpod",
+                startFeatures: { [weak self] in self?.startLauncher() },
+                resumeFeatures: { [weak self] in self?.launcher?.show() })
+            startup?.begin()
+        } catch {
+            // Missing legal resources must never silently unlock the app.
+            let alert = NSAlert()
+            alert.messageText = L10n.text("Unable to load the Terms of Use", "이용약관을 불러올 수 없습니다")
+            alert.informativeText = L10n.text("Retry or quit and reinstall Launchpod. Your existing data has not been changed.",
+                "다시 시도하거나 종료 후 Launchpod를 다시 설치해 주세요. 기존 데이터는 변경되지 않았습니다.")
+            alert.addButton(withTitle: L10n.text("Quit", "종료"))
+            alert.addButton(withTitle: L10n.text("Retry", "다시 시도"))
+            if alert.runModal() == .alertSecondButtonReturn {
+                DispatchQueue.main.async { [weak self] in self?.configureStartup(preview: preview) }
+            } else { NSApp.terminate(nil) }
+        }
+    }
+
+    @MainActor private func startLauncher() {
+        guard !featuresStarted, isolatedChecks || startup?.allowsAppUse == true else { return }
+        featuresStarted = true
         let startup = ProcessInfo.processInfo.systemUptime
+        let args = CommandLine.arguments
+        let isolated = args.contains("--data-dir") || args.contains("--preview-output")
+        diagnostics.start()
         updates = UpdateController()
         updates.beforeShowingUpdate = { [weak self] in self?.launcher?.dismiss(restoreFocus:false) }
         NotificationCenter.default.addObserver(self, selector:#selector(languageChanged), name:L10n.didChange, object:nil)
         buildMenu()
         launcher = LauncherController()
+        launcher.canUseApp = { [weak self] in self?.allowsAppFeatures == true }
         launcher.appIcons.applySavedChoice()
-        HotKey.shared.action = { [weak self] in self?.launcher.toggle() }
-        let hotKeyStatus = HotKey.shared.registerSaved()
-        if hotKeyStatus != 0 { NSLog("Launchpod: hotkey registration failed (%d). Change it in Settings.",hotKeyStatus) }
+        HotKey.shared.action = { [weak self] in self?.toggle() }
+        if !isolated {
+            let hotKeyStatus = HotKey.shared.registerSaved()
+            if hotKeyStatus != 0 { NSLog("Launchpod: hotkey registration failed (%d). Change it in Settings.",hotKeyStatus) }
+        }
         buildStatusMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "square.grid.3x3.fill", accessibilityDescription: "Launchpod")
         statusItem.button?.target = self; statusItem.button?.action = #selector(statusClicked(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp,.rightMouseUp])
-        let args = CommandLine.arguments
         restoreDockShortcutIfNeeded()
         launcher.trackpadGesture.isLauncherShown = { [weak self] in self?.launcher.isShown ?? false }
         launcher.trackpadGesture.onClose = { [weak self] in
-            guard NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0 else { return }
+            guard self?.allowsAppFeatures == true, NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0, self?.onboarding?.isVisible != true else { return }
             self?.launcher.dismiss()
         }
         launcher.trackpadGesture.onOpen = { [weak self] in
-            guard NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0 else { return }
+            guard self?.allowsAppFeatures == true, NSApp.modalWindow == nil, NSEvent.pressedMouseButtons == 0, self?.onboarding?.isVisible != true else { return }
             self?.launcher.show()
         }
-        launcher.hotCorners.canOpen = { [weak self] in self?.launcher.isShown == false }
+        launcher.hotCorners.canOpen = { [weak self] in self?.allowsAppFeatures == true && self?.launcher.isShown == false && self?.onboarding?.isVisible != true }
         launcher.hotCorners.onOpen = { [weak self] screen in self?.launcher.show(on:screen) }
         // Isolated layout/test runs must not install another global listener.
         if !args.contains("--data-dir") && !args.contains("--preview-output") {
@@ -104,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let i = args.firstIndex(of:"--language-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
             launcher.onFirstScan = { [weak self] in
                 guard let self = self else { return }
-                let settings = SettingsController(launcher:self.launcher)
+                let settings = SettingsController(launcher:self.launcher, showOnboarding: {})
                 settings.showWindow(nil)
                 do {
                     try settings.runLanguageChecks(outputDirectory:URL(fileURLWithPath:args[i+1]))
@@ -117,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let output = URL(fileURLWithPath:args[i+1])
                 let domain = "app.launchpod.GestureSettingsChecks."+UUID().uuidString
                 let defaults = UserDefaults(suiteName:domain)!
-                let monitor = TrackpadGesture(defaults:defaults)
+                let monitor = TrackpadGesture(defaults:defaults, permissionAvailable: { false })
                 let settings = SettingsController(launcher:self.launcher,trackpadGesture:monitor)
                 settings.showWindow(nil); settings.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
                 DispatchQueue.main.asyncAfter(deadline:.now()+0.4) {
@@ -279,20 +347,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
                 }
             }
+        } else if let i = args.firstIndex(of: "--onboarding-artwork"), args.indices.contains(i+1), args.contains("--data-dir"), args.contains("--windowed") {
+            launcher.onFirstScan = { [weak self] in
+                self?.launcher.launcherView.captureOnboardingArtwork(to: URL(fileURLWithPath: args[i+1])) { result in
+                    switch result {
+                    case .success: NSApp.terminate(nil)
+                    case .failure(let error): fputs("\(error.localizedDescription)\n", stderr); exit(1)
+                    }
+                }
+            }
         } else if let i = args.firstIndex(of: "--preview-output"), args.indices.contains(i+1) {
             launcher.onFirstScan = { [weak self] in self?.launcher.writePreview(to: args[i+1]) }
         } else {
             launcher.show()
-            if !args.contains("--data-dir") {
-                DispatchQueue.main.asyncAfter(deadline:.now()+Motion.enterDuration) { [weak self] in
-                    guard let self = self else { return }
-                    self.launcher.trackpadGesture.promptForPermissionAtStartup(request: {
-                        self.launcher.dismiss(restoreFocus:false)
-                        self.launcher.trackpadGesture.requestPermission()
-                    })
-                }
-            }
         }
+    }
+    @MainActor @discardableResult private func showOnboardingIfNeeded() -> Bool {
+        guard let startup else { return !isolatedChecks && !featuresStarted }
+        let presented = startup.presentIfNeeded()
+        if presented { launcher?.dismiss(restoreFocus: false) }
+        return presented
     }
     private func restoreDockShortcutIfNeeded() {
         let args = CommandLine.arguments
@@ -300,12 +374,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DockShortcut.addIfNeeded()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        restoreDockShortcutIfNeeded()
-        launcher?.toggle(); return false
+        if !showOnboardingIfNeeded(), allowsAppFeatures {
+            restoreDockShortcutIfNeeded(); launcher?.toggle()
+        }; return false
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { launcher?.prepareForTermination() }
     @objc private func languageChanged() {
+        guard allowsAppFeatures else { return }
         buildMenu()
         buildStatusMenu()
         launcher?.launcherView.refreshLanguage()
@@ -321,22 +397,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.addItem(.separator())
         statusMenu.addItem(NSMenuItem(title: L10n.text("Quit", "종료"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
-    @objc private func statusClicked(_ sender: Any?) {
+    @MainActor @objc private func statusClicked(_ sender: Any?) {
+        guard allowsAppFeatures else { _ = showOnboardingIfNeeded(); return }
         if NSApp.currentEvent?.type == .rightMouseUp {
             // Reuse the startup menu. Attach only while tracking so a normal
             // left click continues to toggle the launcher instead of this menu.
             statusItem.menu = statusMenu
             defer { statusItem.menu = nil }
             statusItem.button?.performClick(nil)
-        } else { launcher.toggle() }
+        } else { toggle() }
     }
-    @objc private func toggle() { launcher?.toggle() }
-    @objc private func settings() { launcher?.showSettings() }
+    @MainActor @objc private func toggle() {
+        guard allowsAppFeatures else { _ = showOnboardingIfNeeded(); return }
+        if onboarding?.isVisible == true { _ = showOnboardingIfNeeded() }
+        else { launcher?.toggle() }
+    }
+    func showOnboardingForReview() {
+        guard let onboarding else { return }
+        do {
+            launcher?.dismiss(restoreFocus: false)
+            try onboarding.showForReview()
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = L10n.text("Could Not Open Introduction", "온보딩을 열 수 없습니다")
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    @objc private func settings() {
+        guard allowsAppFeatures else { _ = showOnboardingIfNeeded(); return }
+        launcher?.showSettings()
+    }
     @objc private func undo() {
+        guard allowsAppFeatures else { return }
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.undoManager?.undo() }
         else { launcher?.undoLayout() }
     }
     @objc private func redo() {
+        guard allowsAppFeatures else { return }
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.undoManager?.redo() }
         else { launcher?.redoLayout() }
     }
@@ -368,7 +467,16 @@ if CommandLine.arguments.contains("--language-checks") || CommandLine.arguments.
     L10n.defaults = UserDefaults(suiteName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)")!
     L10n.defaults.removePersistentDomain(forName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)")
 }
-UserDefaults.standard.register(defaults:["AppleLanguages":[L10n.language.rawValue]])
+// Migrate before the first use of the immutable shared localizer.
+if UserDefaults.standard.string(forKey: AppLocalizer.preferenceKey) == nil {
+    let legacyLanguage = UserDefaults.standard.string(forKey: L10n.preferenceKey) ?? "en"
+    if CommandLine.arguments.contains("--data-dir") || CommandLine.arguments.contains("--preview-output") {
+        UserDefaults.standard.register(defaults: [AppLocalizer.preferenceKey: legacyLanguage])
+    } else {
+        UserDefaults.standard.set(legacyLanguage, forKey: AppLocalizer.preferenceKey)
+    }
+}
+L10n.activeLanguage = { AppLocalizer.current.languageCode == "ko" ? .korean : .english }
 let app = NSApplication.shared
 if let index = CommandLine.arguments.firstIndex(of:"--dock-drag-checks"), CommandLine.arguments.indices.contains(index+1) {
     app.setActivationPolicy(.accessory)
@@ -384,8 +492,11 @@ if let index = CommandLine.arguments.firstIndex(of:"--gesture-checks"), CommandL
 }
 if let index = CommandLine.arguments.firstIndex(of:"--startup-permission-checks"), CommandLine.arguments.indices.contains(index+1) {
     app.setActivationPolicy(.accessory)
-    do { try StartupPermissionChecks.run(outputDirectory:URL(fileURLWithPath:CommandLine.arguments[index+1])); exit(0) }
-    catch { fputs("\(error.localizedDescription)\n",stderr); exit(1) }
+    Task { @MainActor in
+        do { try await StartupPermissionChecks.run(outputDirectory:URL(fileURLWithPath:CommandLine.arguments[index+1])); exit(0) }
+        catch { fputs("\(error.localizedDescription)\n",stderr); exit(1) }
+    }
+    app.run()
 }
 if let index = CommandLine.arguments.firstIndex(of:"--system-gesture-checks"), CommandLine.arguments.indices.contains(index+1) {
     app.setActivationPolicy(.accessory)
@@ -402,7 +513,22 @@ if let index = CommandLine.arguments.firstIndex(of:"--deleted-app-checks"), Comm
     do { try DeletedAppChecks.run(outputDirectory:URL(fileURLWithPath:CommandLine.arguments[index+1])); exit(0) }
     catch { fputs("\(error.localizedDescription)\n",stderr); exit(1) }
 }
-let delegate = AppDelegate()
+if let index = CommandLine.arguments.firstIndex(of: "--service-settings-checks"), CommandLine.arguments.indices.contains(index + 1), CommandLine.arguments.contains("--data-dir") {
+    app.setActivationPolicy(.accessory)
+    MainActor.assumeIsolated {
+        do { try ServiceSettingsChecks.run(outputDirectory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
+        catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    }
+}
+if let index = CommandLine.arguments.firstIndex(of: "--onboarding-checks"), CommandLine.arguments.indices.contains(index + 1), CommandLine.arguments.contains("--data-dir") {
+    app.setActivationPolicy(.accessory)
+    Task { @MainActor in
+        do { try await OnboardingChecks.run(outputDirectory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
+        catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    }
+    app.run()
+}
+let delegate = MainActor.assumeIsolated { AppDelegate() }
 app.delegate = delegate
 // A pinned shortcut opens the launcher without a running-app indicator.
 app.setActivationPolicy(.accessory)

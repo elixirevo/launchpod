@@ -1,455 +1,240 @@
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import LaunchpodCore
+import MacAppCore
+import MacAppSettings
 
-final class SettingsController: NSWindowController, NSWindowDelegate {
+@MainActor
+final class SettingsController {
+    let model: LaunchpodSettingsModel
+    let navigation = SettingsNavigation()
+    let pages: SettingsPages
+    let language: AppLanguageSettings
+    let shortcuts: ShortcutSettingsModel
+    let permissions: PermissionSettingsModel
+    let support: SupportSettingsModel
+    private let host: SettingsWindowController
+    var window: NSWindow? { host.window }
+
+    init(launcher: LauncherController, appIcons: AppIconSettings? = nil,
+         trackpadGesture: TrackpadGesture? = nil, hotCorners: HotCornerMonitor? = nil,
+         showOnboarding: (() -> Void)? = nil) {
+        let model = LaunchpodSettingsModel(launcher: launcher, appIcons: appIcons ?? launcher.appIcons,
+            trackpadGesture: trackpadGesture ?? launcher.trackpadGesture, hotCorners: hotCorners ?? launcher.hotCorners)
+        self.model = model
+        let isolated = CommandLine.arguments.contains("--data-dir")
+        let language = isolated ? AppLanguageSettings(activeSelection: AppLocalizer.current.selection, save: { _ in }) : .shared
+        self.language = language
+        let shortcuts: ShortcutSettingsModel
+        if isolated {
+            let domain = "app.launchpod.ShortcutPreview.\(ProcessInfo.processInfo.processIdentifier)"
+            let defaults = UserDefaults(suiteName: domain)!
+            defaults.removePersistentDomain(forName: domain)
+            shortcuts = HotKey(defaults: defaults, register: { _ in 0 }).settingsModel()
+        } else { shortcuts = HotKey.shared.settingsModel() }
+        self.shortcuts = shortcuts
+        let permissions = (NSApp.delegate as? AppDelegate)?.permissions.settings ?? AppPermissions().settings
+        self.permissions = permissions
+        let diagnostics = (NSApp.delegate as? AppDelegate)?.diagnostics
+        let pages = try! SettingsPages([
+            .builtIn(.general),
+            .custom(id: "launchpod", title: L10n.text("Features", "기능"), symbol: "display",
+                    color: Color(red: 0.30, green: 0.68, blue: 0.94)) {
+                LaunchpodSettingsContent(model: model)
+            },
+            .builtIn(.shortcuts), .builtIn(.permissions), .builtIn(.updates), .support, .builtIn(.about)
+        ])
+        self.pages = pages
+        navigation.configure(pages)
+        let identity = SettingsIdentity(icon: model.appIcons.image(for: model.appIcons.choice),
+            website: URL(string: "https://github.com/elixirevo/launchpod")!)
+        let delegate = NSApp.delegate as? AppDelegate
+        let review = showOnboarding ?? (delegate?.onboarding == nil ? nil : { [weak delegate] in
+            delegate?.showOnboardingForReview()
+        })
+        let support = try! SupportSettingsModel(diagnostics: .init(identity: identity), links: [
+            try! SupportLink(.help, url: URL(string: "https://github.com/elixirevo/launchpod#readme")!),
+            try! SupportLink(.contact, url: URL(string: "mailto:elixirevo@gmail.com")!),
+            try! SupportLink(.reportIssue, url: URL(string: "https://github.com/elixirevo/launchpod/issues")!)
+        ], showOnboarding: review)
+        self.support = support
+        // General resets the common language preference.
+        let reset = try! SettingsResetModel(actions: [
+            SettingsResetAction(id: "language", title: L10n.text("Language", "언어"),
+                detail: L10n.text("Use the system language on the next launch. Your layout and other preferences are kept.",
+                                  "다음 실행부터 시스템 언어를 사용합니다. 배치와 나머지 설정은 유지됩니다.")) {
+                language.select(.system)
+            }
+        ])
+        let updates: UpdateSettingsModel
+        if let updater = (NSApp.delegate as? AppDelegate)?.updates, updater.isAvailable {
+            updates = UpdateSettingsModel(canCheck: { updater.canCheck },
+                automaticChecks: .init(read: { updater.automaticChecks }, write: { updater.automaticChecks = $0 })) {
+                updater.check()
+                return .handledExternally
+            }
+            updater.onSettingsChanged = { [weak updates] in
+                updates?.refreshAutomaticChecks(); updates?.refreshAvailability()
+            }
+        } else {
+            updates = UpdateSettingsModel(unavailableReason: L10n.text("Updates are not available in this build.", "이 빌드에서는 업데이트를 사용할 수 없습니다."))
+        }
+        let login = isolated ? nil : LaunchAtLoginModel()
+        let navigation = self.navigation
+        host = SettingsWindowController(title: L10n.text("Launchpod Settings", "Launchpod 설정"),
+            autosaveName: isolated ? "Launchpod.Settings.Checks" : "Launchpod.Settings", navigation: navigation,
+            onClose: { shortcuts.stopRecording() }) {
+                AppSettingsView(identity: identity, navigation: navigation,
+                    shortcuts: shortcuts, permissions: permissions,
+                    updates: updates, language: language, launchAtLogin: login, pages: pages,
+                    support: support, reset: reset, supportContent: { AnyView(LegalSettingsSection()) }, shortcutsContent: { AnyView(LaunchpodTriggerSettings(model: model)) }) {
+                        if let diagnostics, diagnostics.service != nil {
+                            DiagnosticsSettingsSection(preference: diagnostics.preference)
+                        } else if let error = diagnostics?.error {
+                            SettingsSection(L10n.text("Diagnostics", "진단")) { Text(error) }
+                        }
+                    }
+            }
+    }
+
+    func showWindow(_ sender: Any?) { host.show() }
+    func close() { host.close() }
+}
+
+@MainActor
+final class LaunchpodSettingsModel: ObservableObject {
     weak var launcher: LauncherController?
-    private let languagePopup = NSPopUpButton()
-    private let shortcut = NSButton()
-    private let gestureEnabled = NSButton(checkboxWithTitle:L10n.text("Open/close Launchpod with gestures", "제스처로 Launchpod 열기/닫기"),target:nil,action:nil)
-    private let gesturePopup = NSPopUpButton()
-    private let gestureStatus = NSTextField(wrappingLabelWithString:"")
-    private let gesturePermission = NSButton()
-    private var gestureObserver: NSObjectProtocol?
-    private let hotCorners: HotCornerMonitor
-    private var cornerButtons: [HotCorner:NSButton] = [:]
-    private let hotCornerHint = NSTextField(wrappingLabelWithString:"")
-    private let hotCornerWarning = NSTextField(wrappingLabelWithString:"")
-    private let formScroll = NSScrollView()
-    private var form = FlippedView()
+    let appIcons: AppIconSettings
+    let trackpadGesture: TrackpadGesture
+    let hotCorners: HotCornerMonitor
+    @Published var error: String?
+    private var observers: [NSObjectProtocol] = []
 
-    private let columnPopup = NSPopUpButton()
-    private let rowPopup = NSPopUpButton()
-    private let iconPopup = NSPopUpButton()
-    private let iconPreview = NSImageView()
-    private let trackpadGesture: TrackpadGesture
-    private let appIcons: AppIconSettings
-    private var keyMonitor: Any?
-    init(launcher: LauncherController, appIcons: AppIconSettings? = nil, trackpadGesture: TrackpadGesture? = nil,
-         hotCorners: HotCornerMonitor? = nil) {
-        self.launcher = launcher
-        self.appIcons = appIcons ?? launcher.appIcons
-        self.trackpadGesture = trackpadGesture ?? launcher.trackpadGesture
-        self.hotCorners = hotCorners ?? launcher.hotCorners
-        let height = max(420,min(738,(NSScreen.main?.visibleFrame.height ?? 900)-48))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: height), styleMask: [.titled,.closable], backing: .buffered, defer: false)
-        super.init(window: window)
-        window.center()
-        rebuildContent()
-        gestureObserver = NotificationCenter.default.addObserver(forName:TrackpadGesture.settingsChanged,
-            object:self.trackpadGesture,queue:.main) { [weak self] _ in self?.updateGestureControls() }
-        NotificationCenter.default.addObserver(self, selector:#selector(rebuildContent), name:L10n.didChange, object:nil)
+    init(launcher: LauncherController, appIcons: AppIconSettings, trackpadGesture: TrackpadGesture, hotCorners: HotCornerMonitor) {
+        self.launcher = launcher; self.appIcons = appIcons
+        self.trackpadGesture = trackpadGesture; self.hotCorners = hotCorners
+        observers.append(NotificationCenter.default.addObserver(forName: TrackpadGesture.settingsChanged,
+            object: trackpadGesture, queue: .main) { [weak self] _ in self?.objectWillChange.send() })
     }
-    @objc private func rebuildContent() {
-        guard let window = window, let launcher = launcher else { return }
-        endRecording()
-        window.title = L10n.text("Launchpod Settings", "Launchpod 설정"); window.isReleasedWhenClosed = false; window.delegate = self
-        window.isRestorable = false
-        let scrollPosition = formScroll.contentView.bounds.origin
-        let height = window.contentRect(forFrameRect:window.frame).height
-        let root = FlippedView(frame:NSRect(x:0,y:0,width:520,height:height)); window.contentView = root
-        formScroll.frame = NSRect(x:0,y:0,width:520,height:height-70)
-        formScroll.hasVerticalScroller = true; formScroll.hasHorizontalScroller = false
-        formScroll.scrollerStyle = .overlay; formScroll.drawsBackground = false
-        let content = FlippedView(frame:NSRect(x:0,y:0,width:520,height:888))
-        form = content; formScroll.documentView = content; root.addSubview(formScroll)
-        func label(_ text: String, y: CGFloat, font: NSFont = .systemFont(ofSize: 13)) {
-            let field = NSTextField(labelWithString: text); field.font = font
-            field.frame = NSRect(x: 28, y: y, width: 460, height: 24); content.addSubview(field)
-        }
-        func button(_ title: String, y: CGFloat, action: Selector, x: CGFloat = 195, width: CGFloat = 295, container: NSView? = nil) {
-            let b = NSButton(title: title, target: self, action: action)
-            b.bezelStyle = .rounded; b.frame = NSRect(x: x, y: y, width: width, height: 30); (container ?? content).addSubview(b)
-        }
-        languagePopup.removeAllItems()
-        columnPopup.removeAllItems(); rowPopup.removeAllItems(); iconPopup.removeAllItems(); gesturePopup.removeAllItems()
-        gestureEnabled.title = L10n.text("Open/close Launchpod with gestures", "제스처로 Launchpod 열기/닫기")
-        label("Launchpod", y: 22, font: .systemFont(ofSize: 23, weight: .semibold))
-        label(L10n.text("See all your apps and arrange them your way.", "앱을 한눈에 보고, 원하는 위치에 정리하세요."), y: 53)
-        label(L10n.text("Open / close shortcut", "열기 / 닫기 단축키"), y: 152)
-        shortcut.title = HotKey.shared.label; shortcut.target = self; shortcut.action = #selector(recordShortcut)
-        shortcut.bezelStyle = .rounded; shortcut.frame = NSRect(x: 195, y: 144, width: 295, height: 30); content.addSubview(shortcut)
-        label(L10n.text("Hot corners", "핫 코너"), y: 203)
-        cornerButtons.removeAll()
-        for (index,corner) in HotCorner.allCases.enumerated() {
-            let checkbox = NSButton(checkboxWithTitle:corner.title,target:self,action:#selector(hotCornersChanged))
-            checkbox.frame = NSRect(x:index % 2 == 0 ? 195 : 350,y:index < 2 ? 195 : 229,width:145,height:26)
-            checkbox.state = hotCorners.enabledCorners.contains(corner) ? .on : .off
-            checkbox.setAccessibilityLabel(L10n.text("Open Launchpod from the \(corner.title.lowercased()) corner", "\(corner.title) 모서리에서 Launchpod 열기"))
-            content.addSubview(checkbox); cornerButtons[corner] = checkbox
-        }
-        hotCornerHint.stringValue = L10n.text("Move the pointer to a selected corner on any display to open Launchpod.", "화면의 선택한 모서리로 마우스를 옮기면 Launchpod가 열립니다. 모든 모니터에 적용됩니다.")
-        hotCornerHint.font = .systemFont(ofSize:12); hotCornerHint.textColor = .secondaryLabelColor
-        hotCornerHint.frame = NSRect(x:198,y:269,width:292,height:42); content.addSubview(hotCornerHint)
-        hotCornerWarning.stringValue = L10n.text("Avoid duplicate actions: in System Settings → Desktop & Dock → Hot Corners, set the same corners to “–”. Launchpod must be running to use these corners.", "중복 실행을 막으려면 시스템 설정 → 데스크탑 및 Dock → 핫 코너에서 같은 모서리를 ‘–’로 설정해 주세요. 이 기능은 Launchpod가 실행 중일 때 사용할 수 있습니다.")
-        hotCornerWarning.font = .systemFont(ofSize:12); hotCornerWarning.textColor = .secondaryLabelColor
-        hotCornerWarning.frame = NSRect(x:28,y:324,width:462,height:58); content.addSubview(hotCornerWarning)
-        label(L10n.text("Grid", "격자"), y: 403)
-        columnPopup.addItems(withTitles: (3...9).map { L10n.text("\($0) columns", "\($0)열") }); columnPopup.selectItem(at: launcher.launcherView.columns-3)
-        rowPopup.addItems(withTitles: (3...7).map { L10n.text("\($0) rows", "\($0)행") }); rowPopup.selectItem(at: launcher.launcherView.rows-3)
-        columnPopup.frame = NSRect(x: 198, y: 395, width: 135, height: 30); rowPopup.frame = NSRect(x: 349, y: 395, width: 135, height: 30)
-        for popup in [columnPopup,rowPopup] { popup.target = self; popup.action = #selector(gridChanged); content.addSubview(popup) }
-        label(L10n.text("App icon", "앱 아이콘"), y: 456)
-        for choice in AppIconChoice.allCases {
-            iconPopup.addItem(withTitle:choice.title)
-            let thumbnail = self.appIcons.image(for:choice)?.copy() as? NSImage
-            thumbnail?.size = NSSize(width:24,height:24)
-            iconPopup.lastItem?.image = thumbnail
-        }
-        iconPopup.frame = NSRect(x:198,y: 445,width:218,height:32)
-        iconPopup.target = self; iconPopup.action = #selector(iconChanged)
-        iconPopup.setAccessibilityLabel(L10n.text("App icon", "앱 아이콘"))
-        content.addSubview(iconPopup)
-        iconPreview.frame = NSRect(x:426,y: 432,width:64,height:64)
-        iconPreview.imageScaling = .scaleProportionallyUpOrDown
-        iconPreview.setAccessibilityLabel(L10n.text("Selected app icon preview", "선택한 앱 아이콘 미리보기")); content.addSubview(iconPreview)
-        let iconHint = NSTextField(labelWithString:L10n.text("Applies to the app file and Dock icon.", "앱 파일과 Dock 아이콘에 적용됩니다."))
-        iconHint.font = .systemFont(ofSize:12); iconHint.textColor = .secondaryLabelColor
-        iconHint.frame = NSRect(x:198,y: 492,width:296,height:20); content.addSubview(iconHint)
-        label(L10n.text("Language", "언어"), y: 99)
-        languagePopup.addItems(withTitles:AppLanguage.allCases.map(\.title))
-        languagePopup.selectItem(at:AppLanguage.allCases.firstIndex(of:L10n.language) ?? 0)
-        languagePopup.frame = NSRect(x:198,y:91,width:292,height:30)
-        languagePopup.setAccessibilityLabel(L10n.text("Language", "언어"))
-        languagePopup.target = self; languagePopup.action = #selector(languageChanged)
-        content.addSubview(languagePopup)
-        updateIconControls()
-        label(L10n.text("Legacy Launchpad", "기존 Launchpad"), y: 536)
-        button(L10n.text("Import This Mac’s Layout…", "이 Mac의 배치 가져오기…"), y: 526, action: #selector(importCurrent))
-        button(L10n.text("Choose Launchpad Database…", "Launchpad DB 파일 선택…"), y: 561, action: #selector(importDatabase))
-        label(L10n.text("Launchpod layout", "Launchpod 배치"), y: 610)
-        button(L10n.text("Export…", "내보내기…"), y: 600, action: #selector(exportLayout), width: 140)
-        button(L10n.text("Import…", "가져오기…"), y: 600, action: #selector(importLayout), x: 348, width: 142)
-        label(L10n.text("App library", "앱 목록"), y: 653)
-        button(L10n.text("Add App / Folder Location…", "앱 / 폴더 위치 추가…"), y: 643, action: #selector(addLocation))
-        button(L10n.text("Restore All Hidden Apps", "숨긴 앱 모두 복원"), y: 678, action: #selector(showHidden))
-        label(L10n.text("Trackpad gestures", "트랙패드 제스처"), y: 730)
-        gestureEnabled.frame = NSRect(x:195,y: 723,width:295,height:26)
-        gestureEnabled.target = self; gestureEnabled.action = #selector(gestureChanged)
-        content.addSubview(gestureEnabled)
-        gesturePopup.addItems(withTitles:LauncherGestureChoice.allCases.map(\.title))
-        gesturePopup.font = .systemFont(ofSize:12)
-        gesturePopup.frame = NSRect(x:195,y: 756,width:295,height:30)
-        gesturePopup.target = self; gesturePopup.action = #selector(gestureChanged)
-        gesturePopup.setAccessibilityLabel(L10n.text("Gesture to open Launchpod", "Launchpod 열기 제스처"))
-        content.addSubview(gesturePopup)
-        gestureStatus.font = .systemFont(ofSize:12); gestureStatus.textColor = .secondaryLabelColor
-        gestureStatus.frame = NSRect(x:198,y: 796,width:292,height:40)
-        content.addSubview(gestureStatus)
-        gesturePermission.title = L10n.text("Accessibility Settings…", "손쉬운 사용 권한 설정…")
-        gesturePermission.target = self; gesturePermission.action = #selector(gesturePermissionClicked)
-        gesturePermission.bezelStyle = .rounded
-        gesturePermission.frame = NSRect(x:195,y: 837,width:295,height:30)
-        content.addSubview(gesturePermission)
-        updateGestureControls()
-        button(L10n.text("Rescan Apps", "앱 다시 검색"), y: height-55, action: #selector(rescan), x: 28, width: 140, container:root)
-        button(L10n.text("Open Launchpod", "Launchpod 열기"), y: height-55, action: #selector(openLauncher), x: 345, width: 145, container:root)
-        formScroll.contentView.scroll(to:scrollPosition)
-        formScroll.reflectScrolledClipView(formScroll.contentView)
+    deinit {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
-    @objc private func hotCornersChanged() {
-        hotCorners.configure(corners:Set(cornerButtons.compactMap { $0.value.state == .on ? $0.key : nil }))
-    }
-    @objc private func languageChanged() {
-        guard AppLanguage.allCases.indices.contains(languagePopup.indexOfSelectedItem) else { return }
-        L10n.select(AppLanguage.allCases[languagePopup.indexOfSelectedItem])
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    private func updateGestureControls() {
-        let gesture = trackpadGesture
-        gestureEnabled.state = gesture.enabled ? .on : .off
-        gesturePopup.selectItem(at:LauncherGestureChoice.allCases.firstIndex(of:gesture.choice) ?? 0)
-        gesturePopup.isEnabled = gesture.enabled
-        switch gesture.status {
-        case .off: gestureStatus.stringValue = L10n.text("Gesture detection is off.", "제스처 감지가 꺼져 있습니다.")
-        case .permissionRequired: gestureStatus.stringValue = L10n.text("Enable Launchpod in Accessibility settings.", "손쉬운 사용 권한에서 Launchpod를 켜 주세요.")
-        case .listening: gestureStatus.stringValue = L10n.text("Pinch to open; spread your fingers to close.", "손가락을 오므리면 열리고, 벌리면 닫힙니다.")
-        case .unavailable: gestureStatus.stringValue = L10n.text("Could not start gesture detection. Check Accessibility permissions and try again.", "제스처 감지를 시작하지 못했습니다. 손쉬운 사용 권한을 확인한 뒤 다시 시도해 주세요.")
-        }
-        gesturePermission.isHidden = !gesture.enabled || gesture.status == .listening
-    }
-    @objc private func gestureChanged() {
-        guard LauncherGestureChoice.allCases.indices.contains(gesturePopup.indexOfSelectedItem) else { return }
-        trackpadGesture.configure(enabled:gestureEnabled.state == .on,
-            choice:LauncherGestureChoice.allCases[gesturePopup.indexOfSelectedItem])
-        updateGestureControls()
-    }
-    @objc private func gesturePermissionClicked() { trackpadGesture.requestPermission(); updateGestureControls() }
-    deinit { if let observer = gestureObserver { NotificationCenter.default.removeObserver(observer) } }
-    func runHotCornerSettingsChecks(defaults: UserDefaults, outputDirectory: URL) throws {
-        var checks = 0
-        func check(_ value: Bool, _ message: String) throws {
-            guard value else { throw NSError(domain:"HotCornerSettingsChecks",code:1,userInfo:[NSLocalizedDescriptionKey:message]) }
-            checks += 1
-        }
-        try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
-        try check(hotCorners.enabledCorners.isEmpty && !hotCorners.isListening,"fresh corners are disabled without a listener")
-        for corner in HotCorner.allCases {
-            let control = cornerButtons[corner]!
-            control.state = .on
-            try check(control.sendAction(control.action,to:control.target),"corner checkbox action is connected")
-            try check(hotCorners.enabledCorners.contains(corner),"each corner can be enabled")
-        }
-        cornerButtons[.topRight]!.state = .off
-        hotCornersChanged()
-        let selection: Set<HotCorner> = [.topLeft,.bottomLeft,.bottomRight]
-        try check(hotCorners.enabledCorners == selection,"turning off one corner preserves the others")
-        try check(HotCornerMonitor(defaults:defaults).enabledCorners == selection,"corner preferences survive relaunch")
-        try check(!hotCorners.isListening,"isolated settings changes do not install global listeners")
-        for language in [AppLanguage.english,.korean] {
-            L10n.select(language)
-            rebuildContent()
-            for corner in HotCorner.allCases {
-                let control = cornerButtons[corner]!
-                try check(control.title == corner.title,"corner labels follow the language")
-                try check((control.state == .on) == selection.contains(corner),"language changes preserve selected corners")
-                try check(form.bounds.contains(control.frame),"corner controls fit the form")
-            }
-            try check(hotCornerWarning.stringValue.contains(L10n.text("System Settings", "시스템 설정"))
-                && hotCornerWarning.stringValue.contains("–"),"settings explain how to avoid duplicate system actions")
-            let controls: [NSView] = HotCorner.allCases.map { cornerButtons[$0]! } + [hotCornerHint,hotCornerWarning]
-            for i in controls.indices { for j in controls.indices where j > i {
-                try check(!controls[i].frame.intersects(controls[j].frame),"corner controls and guidance do not overlap")
-            } }
-            for field in [hotCornerHint,hotCornerWarning] {
-                let size = field.cell!.cellSize(forBounds:NSRect(x:0,y:0,width:field.frame.width,height:1000))
-                try check(size.height <= field.frame.height,"localized guidance fits without clipping")
-            }
-            for (name,rect) in [("top",NSRect(x:0,y:0,width:520,height:385)),
-                                ("bottom",NSRect(x:0,y:715,width:520,height:163))] {
-                form.scrollToVisible(rect)
-                window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
-                RunLoop.current.run(until:Date().addingTimeInterval(0.15))
-                if let window = window,
-                   let cg = CGWindowListCreateImage(.null,.optionIncludingWindow,CGWindowID(window.windowNumber),[.boundsIgnoreFraming]),
-                   let png = NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:]) {
-                    try png.write(to:outputDirectory.appendingPathComponent("settings-\(language.rawValue)-\(name).png"))
-                } else { try check(false,"settings screenshot is available") }
-            }
-            try check(form.visibleRect.intersects(gesturePermission.frame),"scrolling reaches the final settings controls")
-        }
-        hotCorners.canOpen = { false }
-        hotCorners.start()
-        try check(hotCorners.isListening,"enabled corners start native monitoring")
-        let center = NSWorkspace.shared.notificationCenter
-        center.post(name:NSWorkspace.willSleepNotification,object:nil)
-        try check(!hotCorners.isListening,"sleep stops monitoring")
-        center.post(name:NSWorkspace.sessionDidResignActiveNotification,object:nil)
-        center.post(name:NSWorkspace.didWakeNotification,object:nil)
-        try check(!hotCorners.isListening,"wake does not monitor an inactive session")
-        center.post(name:NSWorkspace.sessionDidBecomeActiveNotification,object:nil)
-        try check(hotCorners.isListening,"returning to the awake session restores monitoring")
-        hotCorners.configure(corners:[])
-        try check(!hotCorners.isListening,"disabling every corner removes monitoring")
-        hotCorners.configure(corners:selection)
-        try check(hotCorners.isListening,"enabling a corner takes effect immediately")
-        hotCorners.stop()
-        try check(!hotCorners.isListening,"termination removes monitoring")
-        let report = "PASS: \(checks) hot corner settings and lifecycle checks\nNo system hot corner preferences were changed; no mouse input was posted.\n"
-        try report.write(to:outputDirectory.appendingPathComponent("checks.txt"),atomically:true,encoding:.utf8)
-        print(report)
-    }
-    func runLanguageChecks(outputDirectory: URL) throws {
-        var checks = 0
-        func check(_ value: Bool, _ message: String) throws {
-            guard value else { throw NSError(domain:"LanguageChecks",code:1,userInfo:[NSLocalizedDescriptionKey:message]) }
-            checks += 1
-        }
-        try FileManager.default.createDirectory(at:outputDirectory,withIntermediateDirectories:true)
-        defer { L10n.defaults.removePersistentDomain(forName:"app.launchpod.LanguageUIChecks.\(ProcessInfo.processInfo.processIdentifier)") }
-        try check(L10n.language == .english && window?.title == "Launchpod Settings", "fresh UI defaults to English")
-        let originalState = launcher!.state
-        for language in [AppLanguage.korean, .english, .korean] {
-            languagePopup.selectItem(at:AppLanguage.allCases.firstIndex(of:language)!)
-            try check(languagePopup.sendAction(languagePopup.action,to:languagePopup.target), "language action is connected")
-            try check(L10n.language == language, "picker saves selection")
-            try check(window?.title == (language == .english ? "Launchpod Settings" : "Launchpod 설정"), "settings update immediately")
-            try check(NSApp.mainMenu?.items.last?.title == (language == .english ? "Edit" : "편집"), "app menu updates immediately")
-            try check(languagePopup.itemTitles == ["English", "한국어"], "both language names remain discoverable")
-            try check(launcher!.state == originalState, "switching preserves layout and user names")
-            let fresh = SettingsController(launcher:launcher!)
-            try check(fresh.window?.title == window?.title, "new settings window restores selection")
-            fresh.close()
-            guard let view = window?.contentView else { continue }
-            view.layoutSubtreeIfNeeded(); window?.displayIfNeeded()
-            for control in [languagePopup,columnPopup,rowPopup,iconPopup,gesturePopup] {
-                try check(form.bounds.contains(control.frame), "picker remains inside scrollable settings")
-            }
-            window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps:true)
-            RunLoop.current.run(until:Date().addingTimeInterval(0.2))
-            if let window = window,
-               let cg = CGWindowListCreateImage(.null,.optionIncludingWindow,CGWindowID(window.windowNumber),[.boundsIgnoreFraming]),
-               let png = NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:]) {
-                try png.write(to:outputDirectory.appendingPathComponent("settings-\(language.rawValue).png"))
-            } else { try check(false,"capture language settings") }
-        }
-        print("PASS: \(checks) language UI checks")
-    }
-    func runGestureSettingsChecks(outputDirectory: URL) throws {
-        var checks = 0
-        func check(_ condition: Bool, _ name: String) throws {
-            guard condition else { throw NSError(domain:"GestureSettingsChecks",code:1,userInfo:[NSLocalizedDescriptionKey:name]) }
-            checks += 1
-        }
-        try check(gesturePopup.itemTitles == LauncherGestureChoice.allCases.map(\.title),"settings expose the reference gesture choices")
-        gestureEnabled.state = .off
-        try check(gestureEnabled.sendAction(gestureEnabled.action,to:gestureEnabled.target),"checkbox action is connected")
-        try check(!trackpadGesture.enabled && !gesturePopup.isEnabled,"switching off stops the listener and disables selection")
-        gestureEnabled.state = .on
-        _ = gestureEnabled.sendAction(gestureEnabled.action,to:gestureEnabled.target)
-        for index in LauncherGestureChoice.allCases.indices {
-            gesturePopup.selectItem(at:index)
-            try check(gesturePopup.sendAction(gesturePopup.action,to:gesturePopup.target),"gesture choice action is connected")
-            try check(trackpadGesture.choice == LauncherGestureChoice.allCases[index],"selected gesture is saved")
-        }
-        try check(gesturePermission.isHidden == (trackpadGesture.status == .listening),"permission control matches listener state")
-        try check(!gestureStatus.stringValue.isEmpty,"status explains readiness or permission requirement")
-        try check(gesturePermission.title == L10n.text("Accessibility Settings…", "손쉬운 사용 권한 설정…"),"permission control names the actual Accessibility pane")
-        let controls: [NSView] = [gestureEnabled,gesturePopup,gestureStatus,gesturePermission]
-        for control in controls { try check(form.bounds.contains(control.frame),"gesture control is inside scrollable settings") }
-        for i in controls.indices { for j in controls.indices where j > i {
-            try check(!controls[i].frame.intersects(controls[j].frame),"gesture controls do not overlap")
-        } }
-        form.scrollToVisible(NSRect(x:0,y:715,width:520,height:163))
-        try "PASS: \(checks) gesture settings checks\n".write(to:outputDirectory.appendingPathComponent("settings-checks.txt"),atomically:true,encoding:.utf8)
-    }
-    func captureGestureSettings(outputDirectory: URL) throws {
-        guard let window = window, let cg = CGWindowListCreateImage(.null,.optionIncludingWindow,CGWindowID(window.windowNumber),[.boundsIgnoreFraming]),
-              let png = NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:]) else {
-            throw NSError(domain:"GestureSettingsChecks",code:1,userInfo:[NSLocalizedDescriptionKey:"Settings screenshot unavailable"])
-        }
-        try png.write(to:outputDirectory.appendingPathComponent("settings.png"))
-    }
-    private func updateIconControls() {
-        iconPopup.selectItem(at:AppIconChoice.allCases.firstIndex(of:appIcons.choice) ?? 0)
-        iconPreview.image = appIcons.image(for:appIcons.choice)
-    }
-    @objc private func iconChanged() {
-        guard AppIconChoice.allCases.indices.contains(iconPopup.indexOfSelectedItem) else { return }
-        do {
-            try appIcons.select(AppIconChoice.allCases[iconPopup.indexOfSelectedItem])
-            launcher?.rescan()
-        }
-        catch { launcher?.report(error) }
-        updateIconControls()
-    }
-    func runAppIconChecks(outputDirectory: URL, phase: String) throws {
-        var checks = 0
-        func check(_ condition: Bool, _ name: String) throws {
-            guard condition else { throw NSError(domain:"Launchpod.IconChecks",code:1,
-                userInfo:[NSLocalizedDescriptionKey:"App icon check failed: \(name)"]) }; checks += 1
-        }
-        func pixels(_ image: NSImage?) -> Data? {
-            guard let image = image, let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:64,pixelsHigh:64,
-                bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0),
-                let context = NSGraphicsContext(bitmapImageRep:bitmap) else { return nil }
-            // The Dock rasterizes at 512pt. Match that representation instead
-            // of comparing it with size-specific small-icon artwork in ICNS.
-            var sourceRect = NSRect(x:0,y:0,width:512,height:512)
-            guard let source = image.cgImage(forProposedRect:&sourceRect,context:nil,hints:nil) else { return nil }
-            NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
-            NSImage(cgImage:source,size:NSSize(width:512,height:512)).draw(in:NSRect(x:0,y:0,width:64,height:64),from:.zero,operation:.copy,fraction:1)
-            NSGraphicsContext.restoreGraphicsState()
-            return bitmap.representation(using:.png,properties:[:])
-        }
-        func matchingPixels(_ a: Data?, _ b: Data?) -> Bool {
-            func sample(_ data: Data?) -> [UInt8]? {
-                guard let data = data, let source = CGImageSourceCreateWithData(data as CFData,nil),
-                      let image = CGImageSourceCreateImageAtIndex(source,0,nil) else { return nil }
-                var bytes = [UInt8](repeating:0,count:16*16*4)
-                let rendered = bytes.withUnsafeMutableBytes { buffer -> Bool in
-                    guard let context = CGContext(data:buffer.baseAddress,width:16,height:16,bitsPerComponent:8,
-                        bytesPerRow:16*4,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-                    context.draw(image,in:CGRect(x:0,y:0,width:16,height:16)); return true
-                }
-                return rendered ? bytes : nil
-            }
-            guard let first = sample(a), let second = sample(b) else { return false }
-            // AppKit may rasterize a different ICNS representation for the Dock
-            // than for an image view. Compare artwork with a 5/255 mean channel
-            // tolerance instead of requiring identical PNG antialiasing bytes.
-            let error = zip(first,second).reduce(0) { $0+abs(Int($1.0)-Int($1.1)) }
-            return Double(error)/Double(first.count) <= 5
-        }
-        let expected: AppIconChoice = phase == "restore-apps" ? .macOSApps : (phase == "restore-original" ? .originalLaunchpad : .launchpod)
-        try check(["select-original","restore-original","select-apps","restore-apps","restore-default"].contains(phase),"known restart phase")
-        try check(iconPopup.itemTitles == AppIconChoice.allCases.map(\.title),"settings offer all bundled icon choices")
-        try check(AppIconChoice.allCases.allSatisfy { appIcons.image(for:$0)?.isValid == true },"all bundled icons load without system applications")
-        try check(!matchingPixels(pixels(appIcons.image(for:.launchpod)),pixels(appIcons.image(for:.originalLaunchpad))),"the two icons contain different artwork")
-        for other in [AppIconChoice.launchpod, .originalLaunchpad] {
-            try check(!matchingPixels(pixels(appIcons.image(for:.macOSApps)),pixels(appIcons.image(for:other))),"macOS Apps artwork differs from \(other.title)")
-        }
-        try check(appIcons.choice == expected && iconPopup.indexOfSelectedItem == AppIconChoice.allCases.firstIndex(of:expected),"new process restores the saved selection")
-        let actualIcon = pixels(NSApp.applicationIconImage), expectedIcon = pixels(appIcons.image(for:expected))
-        if !matchingPixels(actualIcon,expectedIcon) {
-            try actualIcon?.write(to:outputDirectory.appendingPathComponent("actual-icon.png"))
-            try expectedIcon?.write(to:outputDirectory.appendingPathComponent("expected-icon.png"))
-            print("Icon diagnostics: application=\(String(describing:NSApp.applicationIconImage?.size)), resource=\(String(describing:appIcons.image(for:expected)?.size))")
-        }
-        try check(matchingPixels(actualIcon,expectedIcon),"startup applies the selected Dock artwork")
-        try check(matchingPixels(pixels(iconPreview.image),pixels(appIcons.image(for:expected))),"settings preview matches the saved selection")
-        if phase != "restore-default" {
-            let next: AppIconChoice = phase == "select-apps" ? .macOSApps : (phase == "select-original" ? .originalLaunchpad : .launchpod)
-            iconPopup.selectItem(at:AppIconChoice.allCases.firstIndex(of:next)!)
-            let sent = iconPopup.sendAction(iconPopup.action,to:iconPopup.target)
-            try check(sent && appIcons.choice == next,"the real settings action changes the selection")
-            try check(matchingPixels(pixels(NSApp.applicationIconImage),pixels(appIcons.image(for:next))),"selection immediately updates the Dock artwork")
-            try check(matchingPixels(pixels(iconPreview.image),pixels(appIcons.image(for:next))),"selection immediately updates the preview")
-        }
-        window?.displayIfNeeded()
-        try check(window?.contentView?.bounds.contains(iconPopup.frame) == true
-            && window?.contentView?.bounds.contains(iconPreview.frame) == true
-            && !iconPopup.frame.intersects(iconPreview.frame),"icon controls are visible and do not overlap")
-        if let window = window, let cg = CGWindowListCreateImage(.null,.optionIncludingWindow,CGWindowID(window.windowNumber),[.boundsIgnoreFraming]),
-           let png = NSBitmapImageRep(cgImage:cg).representation(using:.png,properties:[:]) {
-            try png.write(to:outputDirectory.appendingPathComponent("settings-"+phase+".png"))
-        } else { try check(false,"capture settings window") }
-        print("PASS: \(checks) app icon settings checks (\(phase))")
-    }
-    @objc private func recordShortcut() {
-        guard keyMonitor == nil else { return }
-        shortcut.title = L10n.text("Press shortcut (Esc to cancel)", "조합 키를 누르세요 (Esc: 취소)")
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return event }
-            if event.keyCode == 53 { self.endRecording(); return nil }
-            if HotKey.shared.change(event: event) { self.endRecording() }
-            else { NSSound.beep() }
-            return nil
-        }
-    }
-    private func endRecording() {
-        if let monitor = keyMonitor { NSEvent.removeMonitor(monitor) }; keyMonitor = nil
-        shortcut.title = HotKey.shared.label
-    }
-    func windowWillClose(_ notification: Notification) { endRecording() }
-    @objc private func gridChanged() {
-        let columns = columnPopup.indexOfSelectedItem+3, rows = rowPopup.indexOfSelectedItem+3
+    var columns: Int { launcher?.launcherView.columns ?? 7 }
+    var rows: Int { launcher?.launcherView.rows ?? 5 }
+    func grid(columns: Int, rows: Int) {
         UserDefaults.standard.set(columns, forKey: "columns"); UserDefaults.standard.set(rows, forKey: "rows")
-        launcher?.mutate(L10n.text("Change Grid Size", "격자 크기 변경")) { $0.normalize(capacity: columns*rows, folderCapacity: columns*FolderStyle.maximumRows) }
+        launcher?.mutate(L10n.text("Change Grid Size", "격자 크기 변경")) {
+            $0.normalize(capacity: columns * rows, folderCapacity: columns * FolderStyle.maximumRows)
+        }
+        objectWillChange.send()
     }
-    @objc private func importCurrent() {
+    func selectIcon(_ choice: AppIconChoice) {
+        do { try appIcons.select(choice); launcher?.rescan(); error = nil }
+        catch { self.error = error.localizedDescription }
+        objectWillChange.send()
+    }
+    func setCorner(_ corner: HotCorner, enabled: Bool) {
+        var corners = hotCorners.enabledCorners
+        if enabled { corners.insert(corner) } else { corners.remove(corner) }
+        hotCorners.configure(corners: corners); objectWillChange.send()
+    }
+    func gesture(enabled: Bool, choice: LauncherGestureChoice) {
+        trackpadGesture.configure(enabled: enabled, choice: choice); objectWillChange.send()
+    }
+    var gestureStatus: String {
+        switch trackpadGesture.status {
+        case .off: return L10n.text("Gesture detection is off.", "제스처 감지가 꺼져 있습니다.")
+        case .permissionRequired: return L10n.text("Enable Launchpod in Accessibility settings.", "손쉬운 사용 권한에서 Launchpod를 켜 주세요.")
+        case .listening: return L10n.text("Pinch to open; spread your fingers to close.", "손가락을 오므리면 열리고, 벌리면 닫힙니다.")
+        case .unavailable: return L10n.text("Could not start gesture detection. Check Accessibility permissions and try again.", "제스처 감지를 시작하지 못했습니다. 손쉬운 사용 권한을 확인한 뒤 다시 시도해 주세요.")
+        }
+    }
+    func importCurrent() {
         guard let url = LegacyImporter.currentDatabaseURL else {
-            launcher?.report(LayoutError.invalid(L10n.text("No legacy Launchpad database was found on this Mac. Choose a database file from an older Mac.", "이 Mac에서 기존 Launchpad DB를 찾지 못했습니다. 구형 Mac에서 가져온 DB 파일을 선택해 주세요."))); return
+            error = L10n.text("No legacy Launchpad database was found on this Mac. Choose a database file from an older Mac.", "이 Mac에서 기존 Launchpad DB를 찾지 못했습니다. 구형 Mac에서 가져온 DB 파일을 선택해 주세요."); return
         }
         launcher?.importLegacy(url)
     }
-    @objc private func importDatabase() {
+    func importDatabase() {
         let panel = NSOpenPanel(); panel.message = L10n.text("Choose the legacy Launchpad database file.", "기존 Launchpad의 db 파일을 선택하세요.")
         panel.canChooseDirectories = false
         if panel.runModal() == .OK, let url = panel.url { launcher?.importLegacy(url) }
     }
-    @objc private func exportLayout() { launcher?.exportLayout() }
-    @objc private func importLayout() {
+    func importLayout() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]
         if panel.runModal() == .OK, let url = panel.url { launcher?.importLayout(url) }
     }
-    @objc private func addLocation() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true; panel.message = L10n.text("Choose app bundles or folders containing apps.", "앱 묶음 또는 앱이 들어 있는 폴더를 선택하세요.")
+    func addLocation() {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
+        panel.message = L10n.text("Choose app bundles or folders containing apps.", "앱 묶음 또는 앱이 들어 있는 폴더를 선택하세요.")
         if panel.runModal() == .OK { launcher?.addApplicationURLs(panel.urls) }
     }
-    @objc private func showHidden() { launcher?.showHidden() }
-    @objc private func rescan() { launcher?.rescan() }
-    @objc private func openLauncher() { window?.orderOut(nil); launcher?.show() }
+}
+
+@MainActor private struct LaunchpodSettingsContent: View {
+    @ObservedObject var model: LaunchpodSettingsModel
+    var body: some View {
+        Group {
+            SettingsSection(L10n.text("Appearance", "모양")) {
+                SettingsPicker(L10n.text("Columns", "열"), selection: Binding(get: { model.columns }, set: { model.grid(columns: $0, rows: model.rows) })) {
+                    ForEach(3...9, id: \.self) { Text(String($0)).tag($0) }
+                }
+                SettingsPicker(L10n.text("Rows", "행"), selection: Binding(get: { model.rows }, set: { model.grid(columns: model.columns, rows: $0) })) {
+                    ForEach(3...7, id: \.self) { Text(String($0)).tag($0) }
+                }
+                SettingsPicker(L10n.text("App icon", "앱 아이콘"), selection: Binding(get: { model.appIcons.choice }, set: model.selectIcon)) {
+                    ForEach(AppIconChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                SettingsRow(L10n.text("Selected app icon", "선택한 앱 아이콘"), detail: L10n.text("Applies to the app file and Dock icon.", "앱 파일과 Dock 아이콘에 적용됩니다.")) {
+                    if let icon = model.appIcons.image(for: model.appIcons.choice) {
+                        Image(nsImage: icon).resizable().scaledToFit().frame(width: 48, height: 48)
+                    }
+                }
+            }
+            SettingsSection(L10n.text("Layout", "배치")) {
+                SettingsRow(L10n.text("Legacy Launchpad", "기존 Launchpad")) {
+                    Button(L10n.text("Import This Mac’s Layout…", "이 Mac의 배치 가져오기…"), action: model.importCurrent)
+                }
+                SettingsRow(L10n.text("Saved Launchpad database", "저장한 Launchpad 데이터베이스")) {
+                    Button(L10n.text("Choose Database…", "DB 파일 선택…"), action: model.importDatabase)
+                }
+                SettingsRow(L10n.text("Launchpod layout", "Launchpod 배치")) {
+                    Button(L10n.text("Export…", "내보내기…")) { model.launcher?.exportLayout() }
+                    Button(L10n.text("Import…", "가져오기…"), action: model.importLayout)
+                }
+            }
+            SettingsSection(L10n.text("App library", "앱 목록")) {
+                SettingsRow(L10n.text("Search locations", "검색 위치")) { Button(L10n.text("Add App / Folder…", "앱 / 폴더 추가…"), action: model.addLocation) }
+                SettingsRow(L10n.text("Hidden apps", "숨긴 앱")) { Button(L10n.text("Restore All", "모두 복원")) { model.launcher?.showHidden() } }
+                SettingsRow(L10n.text("Installed apps", "설치된 앱")) { Button(L10n.text("Rescan Apps", "앱 다시 검색")) { model.launcher?.rescan() } }
+            }
+            if let error = model.error { Text(error).foregroundColor(.red).textSelection(.enabled) }
+        }
+    }
+}
+
+@MainActor private struct LaunchpodTriggerSettings: View {
+    @ObservedObject var model: LaunchpodSettingsModel
+    var body: some View {
+        Group {
+            SettingsSection(L10n.text("Open / close Launchpod", "Launchpod 열기 / 닫기")) {
+                SettingsRow("Launchpod") {
+                    Button(L10n.text("Open Launchpod", "Launchpod 열기")) {
+                        NSApp.keyWindow?.orderOut(nil); model.launcher?.show()
+                    }
+                }
+                SettingsToggle(L10n.text("Open/close with gestures", "제스처로 열기/닫기"), isOn: Binding(get: { model.trackpadGesture.enabled }, set: { model.gesture(enabled: $0, choice: model.trackpadGesture.choice) }))
+                SettingsPicker(L10n.text("Trackpad gesture", "트랙패드 제스처"), selection: Binding(get: { model.trackpadGesture.choice }, set: { model.gesture(enabled: model.trackpadGesture.enabled, choice: $0) })) {
+                    ForEach(LauncherGestureChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.disabled(!model.trackpadGesture.enabled)
+                Text(model.gestureStatus).font(.callout).foregroundStyle(.secondary)
+            }
+            SettingsSection(L10n.text("Hot corners", "핫 코너"), footer: L10n.text("Move the pointer to a selected corner on any display to open Launchpod. To avoid duplicate actions, set the same corners to “–” in System Settings → Desktop & Dock → Hot Corners. Launchpod must be running.", "화면의 선택한 모서리로 마우스를 옮기면 Launchpod가 열립니다. 모든 모니터에 적용됩니다. 중복 실행을 막으려면 시스템 설정 → 데스크탑 및 Dock → 핫 코너에서 같은 모서리를 ‘–’로 설정하세요. Launchpod가 실행 중이어야 합니다.")) {
+                ForEach(HotCorner.allCases, id: \.self) { corner in
+                    SettingsToggle(corner.title, isOn: Binding(get: { model.hotCorners.enabledCorners.contains(corner) }, set: { model.setCorner(corner, enabled: $0) }))
+                }
+            }
+        }
+    }
 }

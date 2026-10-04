@@ -33,7 +33,6 @@ final class TrackpadGesture {
     private var nextTouchID = 0
     private var device: AnyHashable?
     private var generation = 0
-    private var checkedStartupPermission = false
     private(set) var status: Status = .off
     var isLauncherShown: () -> Bool = { false }
     var onClose: (() -> Void)?
@@ -47,7 +46,6 @@ final class TrackpadGesture {
     // Input Monitoring is a different TCC service and must not be advertised
     // as the destination for this Accessibility request.
     static var hasPermission: Bool { AXIsProcessTrusted() }
-    static let permissionSettingsURL = URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
     init(defaults: UserDefaults = .standard, permissionAvailable: @escaping () -> Bool = { TrackpadGesture.hasPermission }) {
         self.defaults = defaults; self.permissionAvailable = permissionAvailable
     }
@@ -153,34 +151,6 @@ final class TrackpadGesture {
         guard next != status else { return }
         status = next; onStatusChanged?()
         NotificationCenter.default.post(name:Self.settingsChanged,object:self)
-    }
-    /// One reminder per process launch. Reactivation after opening System
-    /// Settings must not show another alert, and choosing Later is not persisted.
-    func promptForPermissionAtStartup(
-        present: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() },
-        request: (() -> Void)? = nil
-    ) {
-        guard !checkedStartupPermission else { return }
-        checkedStartupPermission = true
-        guard enabled, !permissionAvailable() else { return }
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = L10n.text("Permission needed for gestures", "제스처로 열려면 권한이 필요합니다")
-        alert.informativeText = L10n.text("To pinch to open Launchpod while using other apps, allow Accessibility access. In System Settings → Privacy & Security → Accessibility, enable Launchpod. If it is missing, use the + button to add Launchpod from Applications. You can also open this pane later from Launchpod settings.", "다른 앱을 사용하는 중에도 손가락을 오므려 Launchpod를 열려면 손쉬운 사용 권한이 필요합니다. 시스템 설정의 개인정보 보호 및 보안 → 손쉬운 사용에서 Launchpod를 켜 주세요. 목록에 없으면 + 버튼으로 응용 프로그램의 Launchpod를 추가해 주세요. 나중에 앱 설정에서도 열 수 있습니다.")
-        alert.addButton(withTitle:L10n.text("Open Permission Settings", "권한 설정하기"))
-        alert.addButton(withTitle:L10n.text("Later", "나중에"))
-        alert.window.level = .modalPanel
-        if present(alert) == .alertFirstButtonReturn { (request ?? { self.requestPermission() })() }
-    }
-    /// Called after the user chooses permission setup in Settings or the startup alert.
-    func requestPermission(
-        openSettings: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    ) {
-        guard !permissionAvailable() else { refresh(); return }
-        // Our explanatory alert is the only prompt. A native AX request would
-        // display a second system dialog for the same permission.
-        refresh()
-        if !permissionAvailable() { openSettings(Self.permissionSettingsURL) }
     }
     deinit { stopListening(); observers.forEach(NotificationCenter.default.removeObserver); workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver) }
 }

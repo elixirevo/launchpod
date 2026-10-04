@@ -9,7 +9,7 @@ cask "launchpod" do
 
   auto_updates true
   depends_on arch: :arm64
-  depends_on macos: :monterey
+  depends_on macos: :ventura
 
   app "Launchpod.app"
 

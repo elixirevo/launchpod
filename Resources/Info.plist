@@ -12,13 +12,14 @@
     <key>CFBundleVersion</key><string>38</string>
     <key>CFBundleIconFile</key><string>Launchpod</string>
     <key>CFBundleIconName</key><string>launchpod</string>
-    <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>Launchpod contributors. Independent application.</string>
     <key>SUFeedURL</key><string>https://github.com/elixirevo/launchpod/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key><string>EwaxYVoXsrKqu9BI/VSZEsHXo4y2L/e6MsR9+0mXe2k=</string>
+    <key>SUEnableSystemProfiling</key><false/>
     <key>SURequireSignedFeed</key><true/>
     <key>SUVerifyUpdateBeforeExtraction</key><true/>
 </dict></plist>
