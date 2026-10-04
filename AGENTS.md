@@ -19,4 +19,4 @@
 
 - Follow the package’s Features-tab convention: title Features/기능, symbol `display`, color RGB(0.30, 0.68, 0.94). Retain the existing custom `launchpod` page ID and its second position.
 
-- Normal startup stays resident without showing the launcher, including after setup completes/is deferred. Explicit Dock/menu/shortcut/gesture actions open it.
+- Normal startup stays resident without showing the launcher, including after setup completes/is deferred. Explicit Dock/menu/shortcut/gesture actions open it. General includes a separate Features reset for grid, app icon, added search locations and hidden apps; preserve item order, folders and unrelated consent/preferences. Verify changes with scripts/check-settings-behavior.sh using isolated stores.

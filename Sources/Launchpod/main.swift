@@ -111,7 +111,18 @@ import MacAppOnboarding
             launcher.trackpadGesture.start()
             launcher.hotCorners.start()
         }
-        if let i = args.firstIndex(of:"--app-collection-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
+        if let i = args.firstIndex(of: "--settings-behavior-checks"), args.indices.contains(i+1), isolatedChecks {
+            launcher.onFirstScan = { [weak self] in
+                guard let self else { return }
+                do {
+                    try SettingsBehaviorChecks.run(launcher: self.launcher, menu: self.statusMenu,
+                        hasStatusItem: self.statusItem.button != nil,
+                        openLauncher: { _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false) },
+                        outputDirectory: URL(fileURLWithPath: args[i+1]))
+                    NSApp.terminate(nil)
+                } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+            }
+        } else if let i = args.firstIndex(of:"--app-collection-checks"), args.indices.contains(i+1), args.contains("--data-dir") {
             launcher.onFirstScan = { [weak self] in
                 guard let self = self else { return }
                 self.launcher.show()

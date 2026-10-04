@@ -411,6 +411,42 @@ final class LauncherController: NSObject, NSWindowDelegate {
     @objc private func trashItem(_ sender: NSMenuItem) { if let id = sender.representedObject as? String, let app = state.app(id) { trash(app) } }
     @objc private func renameItem(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { launcherView.beginRenamingFolder(id) } }
     @objc private func editItems(_ sender: NSMenuItem) { launcherView.beginEditing() }
+    @MainActor func restoreFeatureDefaults(appIcons: AppIconSettings, defaults: UserDefaults = .standard) throws {
+        guard canUseApp(), !loadFailed else {
+            throw LayoutError.invalid(L10n.text("Settings cannot be restored until the layout is available.", "배치를 불러온 후 설정을 복원할 수 있습니다."))
+        }
+        launcherView.finishFolderDrop()
+        let previous = state
+        var next = previous
+        next.showAllHidden(capacity: 7 * 5, folderCapacity: 7 * FolderStyle.maximumRows)
+        try next.validate()
+        let previousIcon = appIcons.choice
+        try appIcons.select(.launchpod)
+        do {
+            if next != previous { try store.save(next) }
+        } catch {
+            let saveError = error
+            do { try appIcons.select(previousIcon) }
+            catch {
+                throw LayoutError.invalid(saveError.localizedDescription + "\n" + error.localizedDescription)
+            }
+            throw saveError
+        }
+        // Commit non-throwing preferences only after the icon and layout have been saved.
+        for key in ["columns", "rows", "additionalAppPaths"] { defaults.removeObject(forKey: key) }
+        state = next
+        if next != previous {
+            let name = L10n.text("Restore Feature Settings", "기능 설정 복원")
+            layoutUndo.beginUndoGrouping()
+            layoutUndo.registerUndo(withTarget: self) { target in target.restore(previous, name: name) }
+            layoutUndo.setActionName(name)
+            layoutUndo.endUndoGrouping()
+        }
+        launcherView.refresh()
+        catalog.startWatching(appPaths: state.apps.map(\.path))
+        rescan()
+    }
+
     func addApplicationURLs(_ urls: [URL]) {
         var paths = catalog.additionalPaths
         for url in urls where !paths.contains(url.path) { paths.append(url.path) }

@@ -14,6 +14,7 @@ final class SettingsController {
     let shortcuts: ShortcutSettingsModel
     let permissions: PermissionSettingsModel
     let support: SupportSettingsModel
+    let reset: SettingsResetModel
     private let host: SettingsWindowController
     var window: NSWindow? { host.window }
 
@@ -59,14 +60,20 @@ final class SettingsController {
             try! SupportLink(.reportIssue, url: URL(string: "https://github.com/elixirevo/launchpod/issues")!)
         ], showOnboarding: review)
         self.support = support
-        // General resets the common language preference.
+        // Reset actions live in General; their normal controls remain on the Features page.
         let reset = try! SettingsResetModel(actions: [
             SettingsResetAction(id: "language", title: L10n.text("Language", "언어"),
                 detail: L10n.text("Use the system language on the next launch. Your layout and other preferences are kept.",
                                   "다음 실행부터 시스템 언어를 사용합니다. 배치와 나머지 설정은 유지됩니다.")) {
                 language.select(.system)
+            },
+            SettingsResetAction(id: "features", title: L10n.text("Features", "기능"),
+                detail: L10n.text("Restore the 7 × 5 grid and Launchpod icon, clear added search locations, and show hidden apps. App order and folders are kept.",
+                                  "격자를 7 × 5로, 앱 아이콘을 Launchpod로 복원하고 추가 검색 위치와 앱 숨김을 초기화합니다. 앱 순서와 폴더는 유지됩니다.")) {
+                try model.restoreFeatures()
             }
         ])
+        self.reset = reset
         let updates: UpdateSettingsModel
         if let updater = (NSApp.delegate as? AppDelegate)?.updates, updater.isAvailable {
             updates = UpdateSettingsModel(canCheck: { updater.canCheck },
@@ -127,6 +134,12 @@ final class LaunchpodSettingsModel: ObservableObject {
         launcher?.mutate(L10n.text("Change Grid Size", "격자 크기 변경")) {
             $0.normalize(capacity: columns * rows, folderCapacity: columns * FolderStyle.maximumRows)
         }
+        objectWillChange.send()
+    }
+    func restoreFeatures() throws {
+        guard let launcher else { throw CocoaError(.fileWriteUnknown) }
+        try launcher.restoreFeatureDefaults(appIcons: appIcons)
+        error = nil
         objectWillChange.send()
     }
     func selectIcon(_ choice: AppIconChoice) {
