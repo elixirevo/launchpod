@@ -165,7 +165,7 @@ Legacy database import currently supports **Launchpad database schema 13** only.
 
 Layouts do not include application files. Launchpod matches installed apps by path and bundle ID on the destination Mac. Missing apps remain dimmed to preserve their positions, and ambiguous bundle IDs are not matched arbitrarily.
 
-On the first successful scan, Launchpod groups installed system utilities into a Tools folder once. Existing folders and hidden apps are preserved, and subsequent user changes are not automatically reorganized.
+Launchpod groups utilities into a Tools folder by default: apps in system and user Utilities directories, CoreServices applications, bundled application tools (including Xcode’s Icon Composer and Simulator), and apps declaring the Utilities category. Existing layouts receive the expanded classification once; newly discovered utilities then join the same folder. Existing folders, hidden apps and subsequent manual moves are preserved.
 
 ## 🔄 Updates
 

@@ -126,8 +126,12 @@ final class LauncherController: NSObject, NSWindowDelegate {
             self.isScanning = false
             var next = self.state
             next.reconcile(found, removedPaths:removedPaths, capacity: self.launcherView.capacity, folderCapacity: self.launcherView.folderCapacity)
-            // Do not consume the one-time migration on an unavailable catalog.
-            if !found.isEmpty { next.groupSystemAppsIfNeeded(capacity: self.launcherView.capacity, folderCapacity: self.launcherView.folderCapacity) }
+            // Preserve manual moves; default grouping applies only to new apps after migration.
+            if !found.isEmpty {
+                let newAppIDs = Set(next.apps.map(\.id)).subtracting(self.state.apps.map(\.id))
+                next.groupSystemAppsIfNeeded(capacity: self.launcherView.capacity,
+                    folderCapacity: self.launcherView.folderCapacity, newAppIDs: newAppIDs)
+            }
             next.normalize(capacity: self.launcherView.capacity, folderCapacity: self.launcherView.folderCapacity)
             do {
                 if next != self.state {

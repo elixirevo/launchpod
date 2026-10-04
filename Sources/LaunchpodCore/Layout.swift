@@ -6,6 +6,7 @@ public struct AppRecord: Codable, Equatable, Identifiable {
     public var bundleID: String
     public var path: String
     public var available: Bool
+    public var category: String?
     public var iconRevision: Date?
     public init(id: String = UUID().uuidString, title: String, bundleID: String, path: String, available: Bool = true) {
         self.id = id; self.title = title; self.bundleID = bundleID; self.path = path; self.available = available
@@ -225,9 +226,38 @@ public struct LayoutState: Codable, Equatable {
         else { pages.append([id]) }
     }
 
-    /// Group only loose, installed system apps once. Existing folders, hidden
-    /// apps and subsequent manual moves remain the user's choices.
-    public mutating func groupSystemAppsIfNeeded(capacity: Int = 35, folderCapacity: Int = 35) {
+    /// Apply the expanded utility policy once, then group only newly discovered apps.
+    /// Existing folders, hidden apps and subsequent manual moves remain user choices.
+    public mutating func groupSystemAppsIfNeeded(capacity: Int = 35, folderCapacity: Int = 35,
+                                                newAppIDs: Set<String> = []) {
+        let previousPolicy = systemFolderPolicyVersion ?? 0
+        let previouslyGrouped = didGroupSystemApps == true
+        groupLegacySystemAppsIfNeeded(capacity: capacity, folderCapacity: folderCapacity)
+        defer { didGroupSystemApps = true; systemFolderPolicyVersion = 3 }
+        let eligible = Set(apps.filter { app in
+            guard app.available, app.isInitialUtility else { return false }
+            if previousPolicy >= 3 { return newAppIDs.contains(app.id) }
+            // Old-policy utilities outside their folder may have been moved by the user.
+            return !previouslyGrouped || !app.isLegacyInitialUtility || newAppIDs.contains(app.id)
+        }.map(\.id))
+        let ids = pages.flatMap { $0 }.filter { eligible.contains($0) }
+        guard let first = ids.first, let position = location(of: first) else { return }
+        if let folderID = automaticSystemFolderID,
+           let index = folders.firstIndex(where: { $0.id == folderID }) {
+            let lastPage = folders[index].pages.count - 1
+            folders[index].pages[lastPage].append(contentsOf: ids)
+        } else {
+            let folder = AppFolder(title: L10n.text("Tools", "도구"), pages: [ids])
+            pages[position.page][position.index] = folder.id
+            folders.append(folder)
+            automaticSystemFolderID = folder.id
+        }
+        let grouped = Set(ids)
+        pages = pages.map { $0.filter { !grouped.contains($0) } }
+        normalize(capacity: capacity, folderCapacity: folderCapacity)
+    }
+
+    private mutating func groupLegacySystemAppsIfNeeded(capacity: Int, folderCapacity: Int) {
         guard (systemFolderPolicyVersion ?? 0) < 2 else { return }
         defer { didGroupSystemApps = true; systemFolderPolicyVersion = 2 }
         // Correct the identifiable folder created by 0.1.18. Renamed/custom
@@ -242,8 +272,8 @@ public struct LayoutState: Codable, Equatable {
                   let location = location(of:previous.id),
                   let index = folders.firstIndex(where: { $0.id == previous.id }) else { return }
             let children = previous.pages.flatMap { $0 }
-            let tools = children.filter { app($0)?.isInitialUtility == true }
-            let loose = children.filter { app($0)?.isInitialUtility != true }
+            let tools = children.filter { app($0)?.isLegacyInitialUtility == true }
+            let loose = children.filter { app($0)?.isLegacyInitialUtility != true }
             folders[index].title = L10n.text("Tools", "도구"); folders[index].pages = [tools]
             pages[location.page].insert(contentsOf:loose,at:location.index+1)
             automaticSystemFolderID = tools.isEmpty ? nil : previous.id
@@ -251,7 +281,7 @@ public struct LayoutState: Codable, Equatable {
             return
         }
         didGroupSystemApps = true
-        let eligible = Set(apps.filter { $0.isInitialUtility && $0.available }.map(\.id))
+        let eligible = Set(apps.filter { $0.isLegacyInitialUtility && $0.available }.map(\.id))
         let ids = pages.flatMap { $0 }.filter { eligible.contains($0) }
         guard ids.count > 1, let first = ids.first, let position = location(of: first) else { return }
         let folder = AppFolder(title: L10n.text("Tools", "도구"), pages: [ids])
@@ -306,6 +336,21 @@ extension AppRecord {
         "com.apple.printcenter", "com.apple.ScreenSharing", "com.apple.Magnifier", "com.apple.ActivityMonitor"
     ]
     public var isInitialUtility: Bool {
+        if category == "public.app-category.utilities" { return true }
+        let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
+        let directories = ["/System/Applications/Utilities/", "/System/Library/CoreServices/Applications/",
+                           "/Applications/Utilities/", NSHomeDirectory() + "/Applications/Utilities/"]
+        if directories.contains(where: { canonical.hasPrefix($0) }) { return true }
+        let parts = URL(fileURLWithPath: canonical).pathComponents
+        // Match bundle boundaries, not similarly named ordinary directories.
+        return parts.indices.contains { index in
+            guard parts[index].lowercased().hasSuffix(".app"), index + 3 < parts.count,
+                  parts[index + 1] == "Contents" else { return false }
+            return parts[index + 2] == "Applications"
+                || (index + 4 < parts.count && parts[index + 2] == "Developer" && parts[index + 3] == "Applications")
+        }
+    }
+    public var isLegacyInitialUtility: Bool {
         Self.initialUtilityBundleIDs.contains(bundleID)
             && URL(fileURLWithPath:path).standardizedFileURL.path.hasPrefix("/System/Applications/Utilities/")
     }
