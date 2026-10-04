@@ -58,10 +58,10 @@ if [[ "$launchpod_icon_developer" == /Library/Developer/CommandLineTools && -d /
   launchpod_icon_developer=/Applications/Xcode.app/Contents/Developer
 fi
 mkdir -p .build/app-icon
-DEVELOPER_DIR="$launchpod_icon_developer" xcrun actool Resources/launchpod.icon \
-  --compile .build/app-icon --output-format human-readable-text \
+DEVELOPER_DIR="$launchpod_icon_developer" xcrun actool "$PWD/Resources/launchpod.icon" \
+  --compile "$PWD/.build/app-icon" --output-format human-readable-text \
   --platform macosx --minimum-deployment-target 13.0 --app-icon launchpod \
-  --output-partial-info-plist .build/app-icon/Info.plist
+  --output-partial-info-plist "$PWD/.build/app-icon/Info.plist"
 cp .build/app-icon/Assets.car dist/Launchpod.app/Contents/Resources/Assets.car
 cp .build/app-icon/launchpod.icns dist/Launchpod.app/Contents/Resources/Launchpod.icns
 # Compile the supplied alternate Icon Composer documents as static ICNS
@@ -69,9 +69,9 @@ cp .build/app-icon/launchpod.icns dist/Launchpod.app/Contents/Resources/Launchpo
 for launchpod_icon_pair in launchpad:OriginalLaunchpad apps:MacOSApps; do
   launchpod_icon_source="${launchpod_icon_pair%%:*}"
   launchpod_icon_resource="${launchpod_icon_pair#*:}"
-  launchpod_icon_output=".build/app-icon/$launchpod_icon_source"
+  launchpod_icon_output="$PWD/.build/app-icon/$launchpod_icon_source"
   mkdir -p "$launchpod_icon_output"
-  DEVELOPER_DIR="$launchpod_icon_developer" xcrun actool "Resources/$launchpod_icon_source.icon" \
+  DEVELOPER_DIR="$launchpod_icon_developer" xcrun actool "$PWD/Resources/$launchpod_icon_source.icon" \
     --compile "$launchpod_icon_output" --output-format human-readable-text \
     --platform macosx --minimum-deployment-target 13.0 --app-icon "$launchpod_icon_source" \
     --output-partial-info-plist "$launchpod_icon_output/Info.plist"
