@@ -54,8 +54,7 @@ import MacAppOnboarding
                     CommandLine.arguments.contains("--preview-terms") ? AppOnboarding.version : 0
                 }, writeCompletedVersion: { _ in }) : nil,
                 autosavePrefix: preview ? "Launchpod.Preview" : "Launchpod",
-                startFeatures: { [weak self] in self?.startLauncher() },
-                resumeFeatures: { [weak self] in self?.launcher?.show() })
+                startFeatures: { [weak self] in self?.startLauncher() })
             startup?.begin()
         } catch {
             // Missing legal resources must never silently unlock the app.
@@ -358,9 +357,10 @@ import MacAppOnboarding
             }
         } else if let i = args.firstIndex(of: "--preview-output"), args.indices.contains(i+1) {
             launcher.onFirstScan = { [weak self] in self?.launcher.writePreview(to: args[i+1]) }
-        } else {
+        } else if isolatedChecks {
             launcher.show()
         }
+        // Normal launches stay resident; only an explicit open action presents the launcher.
     }
     @MainActor @discardableResult private func showOnboardingIfNeeded() -> Bool {
         guard let startup else { return !isolatedChecks && !featuresStarted }

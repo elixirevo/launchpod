@@ -18,3 +18,5 @@
 - MacAppEssentials 0.5.0: connect SupportSettingsModel.showOnboarding to the retained onboarding host’s showForReview(). Never clear completion or consent for review, or attach feature startup callbacks to the review window. Keep onboarding and terms versions unchanged for presentation-only updates.
 
 - Follow the package’s Features-tab convention: title Features/기능, symbol `display`, color RGB(0.30, 0.68, 0.94). Retain the existing custom `launchpod` page ID and its second position.
+
+- Normal startup stays resident without showing the launcher, including after setup completes/is deferred. Explicit Dock/menu/shortcut/gesture actions open it.
