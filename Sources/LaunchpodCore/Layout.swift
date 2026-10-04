@@ -316,7 +316,26 @@ public struct LayoutState: Codable, Equatable {
         guard !discovered.isEmpty else { return }
         groupSystemAppsIfNeeded(capacity: capacity, folderCapacity: folderCapacity,
                                 newAppIDs: Set(apps.map(\.id)).subtracting(previousIDs))
-        guard needsInitialOrder else { return }
+        if needsInitialOrder { arrangeDefaultPages(capacity: capacity, folderCapacity: folderCapacity) }
+    }
+
+    /// Explicitly reset placement without changing app identity, availability or hiding.
+    public mutating func resetAppPlacement(capacity: Int = 35, folderCapacity: Int = 35) {
+        var next = LayoutState()
+        next.schemaVersion = schemaVersion
+        next.apps = apps.sorted {
+            let order = $0.title.localizedStandardCompare($1.title)
+            return order == .orderedSame ? $0.path < $1.path : order == .orderedAscending
+        }
+        next.hidden = hidden
+        let hiddenIDs = Set(hidden)
+        next.pages = [next.apps.filter { !hiddenIDs.contains($0.id) }.map(\.id)]
+        next.groupSystemAppsIfNeeded(capacity: capacity, folderCapacity: folderCapacity)
+        next.arrangeDefaultPages(capacity: capacity, folderCapacity: folderCapacity)
+        self = next
+    }
+
+    private mutating func arrangeDefaultPages(capacity: Int, folderCapacity: Int) {
         let root = pages.flatMap { $0 }
         let builtInIDs = Set(apps.filter(\.isBuiltInAppleApp).map(\.id))
         var systemItems = root.filter { builtInIDs.contains($0) }

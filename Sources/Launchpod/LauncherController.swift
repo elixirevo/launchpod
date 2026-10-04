@@ -409,6 +409,26 @@ final class LauncherController: NSObject, NSWindowDelegate {
     @objc private func trashItem(_ sender: NSMenuItem) { if let id = sender.representedObject as? String, let app = state.app(id) { trash(app) } }
     @objc private func renameItem(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { launcherView.beginRenamingFolder(id) } }
     @objc private func editItems(_ sender: NSMenuItem) { launcherView.beginEditing() }
+    @MainActor func resetAppPlacement() throws {
+        guard canUseApp(), !loadFailed else {
+            throw LayoutError.invalid(L10n.text("The layout must be available before it can be reset.", "배치를 불러온 후 초기화할 수 있습니다."))
+        }
+        launcherView.finishFolderDrop()
+        let previous = state
+        var next = previous
+        next.resetAppPlacement(capacity: launcherView.capacity, folderCapacity: launcherView.folderCapacity)
+        try next.validate()
+        guard next != previous else { return }
+        try store.save(next)
+        state = next
+        let name = L10n.text("Reset App Layout", "앱 배치 초기화")
+        layoutUndo.beginUndoGrouping()
+        layoutUndo.registerUndo(withTarget: self) { target in target.restore(previous, name: name) }
+        layoutUndo.setActionName(name)
+        layoutUndo.endUndoGrouping()
+        launcherView.refresh()
+    }
+
     @MainActor func restoreFeatureDefaults(appIcons: AppIconSettings, defaults: UserDefaults = .standard) throws {
         guard canUseApp(), !loadFailed else {
             throw LayoutError.invalid(L10n.text("Settings cannot be restored until the layout is available.", "배치를 불러온 후 설정을 복원할 수 있습니다."))

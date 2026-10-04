@@ -24,3 +24,5 @@
 - The default Tools folder contains only macOS-bundled Apple utilities in `/System/Applications/Utilities` and `/System/Library/CoreServices/Applications`. Do not auto-group separately installed apps, apps declaring the Utilities category, Xcode or its bundled tools. Discovery/search support for those apps remains independent of default folder grouping.
 
 - A pristine first catalog scan puts macOS apps and the automatic Tools folder first, with Tools on page one; user-installed apps begin on a separate page after the system apps. Preserve catalog order within groups. Never apply this initial ordering to existing/imported layouts, rescans or settings reset.
+
+- Explicit app-placement reset lives in Features > Layout with confirmation and Undo/Redo. Reuse the default system-first layout policy; remove custom folders but preserve hidden/unavailable apps, stable app IDs and all preferences. General’s feature reset must continue preserving order/folders. Save successfully before applying the new arrangement.

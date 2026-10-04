@@ -142,6 +142,28 @@ final class LaunchpodSettingsModel: ObservableObject {
         error = nil
         objectWillChange.send()
     }
+    func requestAppPlacementReset(confirm: (() -> Bool)? = nil) {
+        let approved: Bool
+        if let confirm { approved = confirm() }
+        else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = L10n.text("Reset app layout?", "앱 아이콘 배치를 초기화할까요?")
+            alert.informativeText = L10n.text(
+                "Your folders will be removed and apps arranged in the default order: macOS apps, Tools, then installed apps. Hidden apps and other settings are kept. You can undo this from the Edit menu.",
+                "사용자 폴더를 해제하고 macOS 기본 앱, 도구 폴더, 사용자 설치 앱 순서로 재배치합니다. 숨긴 앱과 다른 설정은 유지됩니다. 편집 메뉴에서 실행 취소할 수 있습니다.")
+            alert.addButton(withTitle: L10n.text("Reset Layout", "배치 초기화"))
+            alert.addButton(withTitle: L10n.text("Cancel", "취소"))
+            approved = alert.runModal() == .alertFirstButtonReturn
+        }
+        guard approved else { return }
+        do {
+            guard let launcher else { throw CocoaError(.fileWriteUnknown) }
+            try launcher.resetAppPlacement()
+            error = nil
+            objectWillChange.send()
+        } catch { self.error = error.localizedDescription }
+    }
     func selectIcon(_ choice: AppIconChoice) {
         do { try appIcons.select(choice); launcher?.rescan(); error = nil }
         catch { self.error = error.localizedDescription }
@@ -206,6 +228,10 @@ final class LaunchpodSettingsModel: ObservableObject {
                 }
             }
             SettingsSection(L10n.text("Layout", "배치")) {
+                SettingsRow(L10n.text("App icon layout", "앱 아이콘 배치"),
+                    detail: L10n.text("Restore the default app order and Tools folder.", "기본 앱 순서와 도구 폴더로 재배치합니다.")) {
+                    Button(L10n.text("Reset Layout…", "배치 초기화…")) { model.requestAppPlacementReset() }
+                }
                 SettingsRow(L10n.text("Legacy Launchpad", "기존 Launchpad")) {
                     Button(L10n.text("Import This Mac’s Layout…", "이 Mac의 배치 가져오기…"), action: model.importCurrent)
                 }
