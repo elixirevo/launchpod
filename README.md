@@ -114,7 +114,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run --arch arm64 
 
 Use `build-app.sh` to create the complete app bundle with compiled icons, Sparkle, Sentry (including its privacy manifest) and SwiftPM resource bundles. The local MacAppEssentials dependency must be checked out at `../../tools/library` relative to this repository.
 
-Launchpod scans `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications` and `~/Applications`, plus user-added locations. This includes system utilities such as Keychain Access. Embedded helpers and background-only services remain excluded.
+Launchpod scans `/Applications`, `/System/Applications`, `/System/Library/CoreServices/Applications` and `~/Applications`, plus user-added locations. This includes system utilities such as Keychain Access. App bundles also expose tools from `Contents/Applications` and `Contents/Developer/Applications`, including Xcode’s Icon Composer and other development tools. Other bundle internals, login helpers and background-only services remain excluded.
 
 Normal startup leaves Launchpod running in the menu bar without opening the launcher. Click its icon, use the shortcut, or choose Open Launchpod to show it. Required first-run setup and changed terms still appear when needed.
 

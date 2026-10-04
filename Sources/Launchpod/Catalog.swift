@@ -27,17 +27,17 @@ final class AppCatalog {
     }
     static func discover(roots: [URL]) -> [AppRecord] {
         let fm = FileManager.default
-        var found: [AppRecord] = [], visited = Set<String>()
+        var found: [AppRecord] = [], visited = Set<String>(), visitedDirectories = Set<String>()
         func inspect(_ url: URL) {
             let canonical = url.resolvingSymlinksInPath().standardizedFileURL
             // LSUIElement controls Dock presence, not whether an app can be
-            // launched by the user (e.g. PinShot or Tailscale). Embedded helpers
-            // are already excluded by not descending into app bundles below.
+            // launched by the user (e.g. PinShot or Tailscale). Inside app bundles,
+            // only the dedicated Applications directories below are traversed.
             guard visited.insert(canonical.path).inserted, let bundle = Bundle(url: canonical) else { return }
             let packageType = bundle.infoDictionary?["CFBundlePackageType"] as? String
-            // Some standalone system apps (e.g. Passwords) use XPC! rather
-            // than APPL. Require macOS to identify those bundles as apps.
-            guard (packageType == "APPL" || (packageType == "XPC!" &&
+            // Passwords uses XPC!, while Icon Composer omits the package type.
+            // Accept those cases only when macOS identifies the bundle as an app.
+            guard (packageType == "APPL" || ((packageType == nil || packageType == "XPC!") &&
                     (try? canonical.resourceValues(forKeys:[.isApplicationKey]).isApplication) == true)),
                   (bundle.infoDictionary?["LSBackgroundOnly"] as? NSNumber)?.boolValue != true,
                   bundle.bundleIdentifier != "com.apple.launchpad.launcher",
@@ -55,12 +55,18 @@ final class AppCatalog {
                 (try? $0.resourceValues(forKeys:[.contentModificationDateKey]))?.contentModificationDate
             }.max()
             found.append(record)
+            // Suites such as Xcode ship launchable tools here. Never recursively
+            // traverse arbitrary Contents, Resources, Frameworks or LoginItems.
+            for directory in ["Contents/Applications", "Contents/Developer/Applications"] {
+                scanDirectory(canonical.appendingPathComponent(directory))
+            }
         }
-        for root in roots {
-            if root.pathExtension.lowercased() == "app" { inspect(root); continue }
+        func scanDirectory(_ root: URL) {
+            let canonical = root.resolvingSymlinksInPath().standardizedFileURL
+            guard visitedDirectories.insert(canonical.path).inserted else { return }
             // Safari's /Applications entry is a hidden symlink to a visible
             // Cryptex app. Inspect hidden links before filtering hidden entries.
-            guard let e = fm.enumerator(at: root, includingPropertiesForKeys: [.isHiddenKey, .isSymbolicLinkKey, .isPackageKey], options: [], errorHandler: { _, _ in true }) else { continue }
+            guard let e = fm.enumerator(at: canonical, includingPropertiesForKeys: [.isHiddenKey, .isSymbolicLinkKey, .isPackageKey], options: [], errorHandler: { _, _ in true }) else { return }
             for case let url as URL in e {
                 let values = try? url.resourceValues(forKeys:[.isHiddenKey, .isSymbolicLinkKey, .isPackageKey])
                 if url.lastPathComponent.hasPrefix(".") { e.skipDescendants(); continue }
@@ -75,6 +81,10 @@ final class AppCatalog {
                 if url.pathExtension.lowercased() == "app" { inspect(url); e.skipDescendants() }
                 else if values?.isPackage == true { e.skipDescendants() }
             }
+        }
+        for root in roots {
+            if root.pathExtension.lowercased() == "app" { inspect(root) }
+            else { scanDirectory(root) }
         }
         return found.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }

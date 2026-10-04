@@ -10,12 +10,13 @@ func expect(_ condition: Bool, _ message: String) throws {
     guard condition else { throw LayoutError.invalid("FAIL: "+message) }
     checks += 1
 }
-func fixture(_ name: String, parent: URL? = nil, info extra: [String:Any] = [:], executable: Bool = true) throws -> URL {
+func fixture(_ name: String, parent: URL? = nil, info extra: [String:Any] = [:], packageType: String? = "APPL", executable: Bool = true) throws -> URL {
     let app = (parent ?? directory).appendingPathComponent(name+".app")
     let contents = app.appendingPathComponent("Contents")
     try fm.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
     var info: [String:Any] = ["CFBundleIdentifier":"test.launchpod."+name,
-        "CFBundleName":name, "CFBundlePackageType":"APPL", "CFBundleExecutable":name]
+        "CFBundleName":name, "CFBundleExecutable":name]
+    if let packageType { info["CFBundlePackageType"] = packageType }
     info.merge(extra) { _, new in new }
     try PropertyListSerialization.data(fromPropertyList:info,format:.xml,options:0).write(to:contents.appendingPathComponent("Info.plist"))
     if executable {
@@ -94,15 +95,50 @@ do {
     try store.save(layout)
     let recoveredLayout = try store.load()
     try expect(AppSearch.results(for:"SAFARI",in:recoveredLayout).count == 1 && AppSearch.results(for:"PASSWORDS",in:recoveredLayout).count == 1,"recovered apps remain searchable after reload")
+    // App suites expose tools in dedicated Applications directories, not arbitrary bundle internals.
+    let suites = directory.appendingPathComponent("Suites")
+    let suite = try fixture("RenamedToolSuite", parent:suites)
+    let bundledTools = suite.appendingPathComponent("Contents/Applications")
+    let iconComposer = try fixture("Icon Composer", parent:bundledTools, packageType:nil)
+    let simulator = try fixture("Simulator", parent:suite.appendingPathComponent("Contents/Developer/Applications"))
+    _ = try fixture("InternalLoginHelper", parent:suite.appendingPathComponent("Contents/Library/LoginItems"))
+    _ = try fixture("SampleApp", parent:suite.appendingPathComponent("Contents/Resources/Examples"))
+    _ = try fixture("FrameworkHelper", parent:suite.appendingPathComponent("Contents/Frameworks/Support"))
+    _ = try fixture("BackgroundTool", parent:bundledTools, info:["LSBackgroundOnly":true])
+    _ = try fixture("IconHelper", parent:iconComposer.appendingPathComponent("Contents/Library/LoginItems"))
+    try fm.createSymbolicLink(at:bundledTools.appendingPathComponent("Parent.app"), withDestinationURL:suite)
+    try fm.createSymbolicLink(at:bundledTools.appendingPathComponent("ToolAlias.app"), withDestinationURL:iconComposer)
+    let suiteApps = AppCatalog.discover(roots:[suites,suite,bundledTools,iconComposer])
+    try expect(Set(suiteApps.map(\.path)) == Set([suite.path,iconComposer.path,simulator.path]) && suiteApps.count == 3,
+        "suite tools are found without helper/resource apps, duplicates or symlink loops")
+    try expect(AppCatalog.discover(roots:[suite]).count == 3,"directly configured or renamed suite includes its tools")
+    var suiteLayout = LayoutState(); suiteLayout.reconcile(suiteApps)
+    try expect(AppSearch.results(for:"icon composer",in:suiteLayout).map(\.path) == [iconComposer.path],"bundled Icon Composer is searchable")
+    try expect(AppSearch.results(for:"simulator",in:suiteLayout).map(\.path) == [simulator.path],"developer tools are searchable")
+    let composerID = suiteLayout.apps.first { $0.path == iconComposer.path }!.id
+    suiteLayout.hide(composerID)
+    suiteLayout.reconcile(AppCatalog.discover(roots:[suites]))
+    try expect(suiteLayout.hidden.contains(composerID) && AppSearch.results(for:"icon composer",in:suiteLayout).isEmpty,
+        "rescanning bundled tools preserves explicit hiding")
+    let removedToolPath = simulator.path
+    try fm.removeItem(at:simulator)
+    let afterToolRemoval = AppCatalog.discover(roots:[suites])
+    let removedTools = AppCatalog.removedPaths(previousApps:suiteApps,discovered:afterToolRemoval,roots:[suites])
+    try expect(removedTools == [removedToolPath],"removed bundled tools are recognized inside a scanned suite")
+    suiteLayout.reconcile(afterToolRemoval,removedPaths:removedTools)
+    try suiteLayout.validate()
+    try store.save(suiteLayout)
+    try expect(try store.load() == suiteLayout,"bundled tool catalog and hidden state persist")
     let args = CommandLine.arguments
     if let i = args.firstIndex(of:"--installed"), args.indices.contains(i+1) {
         let url = URL(fileURLWithPath:args[i+1]).resolvingSymlinksInPath().standardizedFileURL
         let installed = AppCatalog.discover(roots:[url])
-        try expect(installed.count == 1 && installed[0].path == url.path,"installed app is discoverable: "+url.path)
+        try expect(installed.filter { $0.path == url.path }.count == 1,"installed app is discoverable: "+url.path)
         var actual = LayoutState(); actual.reconcile(installed)
         try expect(AppSearch.results(for:url.deletingPathExtension().lastPathComponent.lowercased(),in:actual).count == 1,
             "installed app is placed and searchable")
-        print("Installed app: \(installed[0].title); \(installed[0].bundleID); \(installed[0].path)")
+        let target = installed.first { $0.path == url.path }!
+        print("Installed app: \(target.title); \(target.bundleID); \(target.path)")
         let defaultScan = AppCatalog.discover(roots:AppCatalog().roots)
         try expect(defaultScan.contains { $0.path == url.path },"installed app is also discovered through default scan roots")
     }
