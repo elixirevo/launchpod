@@ -390,6 +390,7 @@ import MacAppOnboarding
         statusMenu.removeAllItems()
         let show = NSMenuItem(title: L10n.text("Open Launchpod", "Launchpod 열기"), action: #selector(toggle), keyEquivalent: "")
         show.target = self; statusMenu.addItem(show)
+        statusMenu.addItem(.separator())
         let settings = NSMenuItem(title: L10n.text("Settings…", "설정…"), action: #selector(settings), keyEquivalent: "")
         settings.target = self; statusMenu.addItem(settings)
         statusMenu.addItem(updates.makeCheckMenuItem())
