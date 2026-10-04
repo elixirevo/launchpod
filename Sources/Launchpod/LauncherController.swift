@@ -125,14 +125,8 @@ final class LauncherController: NSObject, NSWindowDelegate {
             guard let self = self else { return }
             self.isScanning = false
             var next = self.state
-            next.reconcile(found, removedPaths:removedPaths, capacity: self.launcherView.capacity, folderCapacity: self.launcherView.folderCapacity)
-            // Preserve manual moves; default grouping applies only to new apps after migration.
-            if !found.isEmpty {
-                let newAppIDs = Set(next.apps.map(\.id)).subtracting(self.state.apps.map(\.id))
-                next.groupSystemAppsIfNeeded(capacity: self.launcherView.capacity,
-                    folderCapacity: self.launcherView.folderCapacity, newAppIDs: newAppIDs)
-            }
-            next.normalize(capacity: self.launcherView.capacity, folderCapacity: self.launcherView.folderCapacity)
+            next.reconcileCatalog(found, removedPaths: removedPaths, capacity: self.launcherView.capacity,
+                                  folderCapacity: self.launcherView.folderCapacity)
             do {
                 if next != self.state {
                     try self.store.save(next)

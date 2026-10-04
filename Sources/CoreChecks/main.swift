@@ -70,6 +70,7 @@ expect(!AppRecord(title:"Fake",bundleID:"com.apple.fake",path:"/System/Applicati
 expect(!AppRecord(title:"Fake",bundleID:"vendor.fake",path:"/System/Applications/Fake.app").isBuiltInAppleApp,"system grouping requires an Apple bundle identity")
 expect(systemLayout.location(of:safari.id)?.folderID == nil,"Safari remains outside the Tools folder")
 try runUtilityGroupingChecks { expect($0, $1) }
+try runInitialLayoutChecks { expect($0, $1) }
 expect(!AppRecord(title:"Notes",bundleID:"com.apple.Notes",path:"/System/Applications/Notes.app").isInitialUtility,"general Apple apps are never initial utilities")
 expect(!AppRecord(title:"Terminal",bundleID:"com.apple.Terminal",path:"/Applications/Terminal.app").isInitialUtility,"a separately installed copy is not grouped as a system utility")
 var priorGrouping = LayoutState()

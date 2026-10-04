@@ -304,6 +304,37 @@ public struct LayoutState: Codable, Equatable {
         normalize(capacity: capacity, folderCapacity: folderCapacity)
     }
 
+    /// Catalog refresh preserves saved layouts; only a pristine first scan gets default pages.
+    public mutating func reconcileCatalog(_ discovered: [AppRecord], removedPaths: Set<String> = [],
+                                          capacity: Int = 35, folderCapacity: Int = 35) {
+        let needsInitialOrder = apps.isEmpty && pages.allSatisfy(\.isEmpty)
+            && folders.isEmpty && hidden.isEmpty && didGroupSystemApps != true
+            && systemFolderPolicyVersion == nil
+        let previousIDs = Set(apps.map(\.id))
+        reconcile(discovered, removedPaths: removedPaths, capacity: capacity, folderCapacity: folderCapacity)
+        // An empty/unavailable catalog must not consume the initial layout policy.
+        guard !discovered.isEmpty else { return }
+        groupSystemAppsIfNeeded(capacity: capacity, folderCapacity: folderCapacity,
+                                newAppIDs: Set(apps.map(\.id)).subtracting(previousIDs))
+        guard needsInitialOrder else { return }
+        let root = pages.flatMap { $0 }
+        let builtInIDs = Set(apps.filter(\.isBuiltInAppleApp).map(\.id))
+        var systemItems = root.filter { builtInIDs.contains($0) }
+        let installedItems = root.filter { !builtInIDs.contains($0) && $0 != automaticSystemFolderID }
+        let pageCapacity = max(1, capacity)
+        if let folderID = automaticSystemFolderID, root.contains(folderID) {
+            // Keep Tools on the first page even with a small user-selected grid.
+            systemItems.insert(folderID, at: min(systemItems.count, pageCapacity - 1))
+        }
+        func paginated(_ ids: [String]) -> [[String]] {
+            stride(from: 0, to: ids.count, by: pageCapacity).map {
+                Array(ids[$0..<min($0 + pageCapacity, ids.count)])
+            }
+        }
+        pages = paginated(systemItems) + paginated(installedItems)
+        normalize(capacity: pageCapacity, folderCapacity: folderCapacity)
+    }
+
     /// A moved app keeps its identity only when the bundle ID has exactly one
     /// unmatched old and new candidate. Two installed versions never collapse.
     public mutating func reconcile(_ discovered: [AppRecord], removedPaths: Set<String> = [], capacity: Int = 35, folderCapacity: Int = 35) {

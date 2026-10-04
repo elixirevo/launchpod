@@ -22,3 +22,5 @@
 - Normal startup stays resident without showing the launcher, including after setup completes/is deferred. Explicit Dock/menu/shortcut/gesture actions open it. General includes a separate Features reset for grid, app icon, added search locations and hidden apps; preserve item order, folders and unrelated consent/preferences. Verify changes with scripts/check-settings-behavior.sh using isolated stores.
 
 - The default Tools folder contains only macOS-bundled Apple utilities in `/System/Applications/Utilities` and `/System/Library/CoreServices/Applications`. Do not auto-group separately installed apps, apps declaring the Utilities category, Xcode or its bundled tools. Discovery/search support for those apps remains independent of default folder grouping.
+
+- A pristine first catalog scan puts macOS apps and the automatic Tools folder first, with Tools on page one; user-installed apps begin on a separate page after the system apps. Preserve catalog order within groups. Never apply this initial ordering to existing/imported layouts, rescans or settings reset.
