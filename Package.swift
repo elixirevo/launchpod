@@ -6,6 +6,7 @@ let package = Package(
     defaultLocalization: "en",
     platforms: [.macOS(.v13)],
     products: [.executable(name: "Launchpod", targets: ["Launchpod"])],
+    // Local MacAppEssentials checkout validated at v0.5.1 (b3e36a4); includes the Sentry adapter.
     dependencies: [.package(path: "../../tools/library/Integrations/MacAppDiagnosticsSentry"), .package(name: "MacAppEssentials", path: "../../tools/library"), .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")],
     targets: [
         .systemLibrary(name: "CSQLite", pkgConfig: "sqlite3"),

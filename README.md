@@ -217,9 +217,11 @@ Add `--reduce-motion` to check reduced animations without changing system prefer
 
 See [App icon resources](Resources/README.md) for the Icon Composer assets and how they are bundled.
 
-## MacAppEssentials 0.5.0 integration
+## MacAppEssentials 0.5.1 integration
 
-The local dependency at `../../tools/library` uses `v0.5.0` plus the Features-tab and login-item fixes (`0e60a18`). The login-item first-registration fix means a main-app `notFound` status leaves the toggle available, and registration errors are shown after an explicit user attempt. It adds the shared Help & Support onboarding review action, alongside versioned terms acceptance, bundled support documents and `shortcutsContent`. The second Features tab uses the package example’s sky-blue monitor icon and retains the existing `launchpod` page ID. Grid/icon/layout controls remain there; gestures and hot corners are on Keyboard Shortcuts above the shared recorder. Terms/privacy remain read-only under Help & Support.
+The local dependency at `../../tools/library` uses `v0.5.1` (`b3e36a4`), including the Features-tab and login-item fixes. The login-item first-registration fix means a main-app `notFound` status leaves the toggle available, and registration errors are shown after an explicit user attempt. It adds the shared Help & Support onboarding review action, alongside versioned terms acceptance, bundled support documents and `shortcutsContent`. The second Features tab uses the package example’s sky-blue monitor icon and retains the existing `launchpod` page ID. Grid/icon/layout controls remain there; gestures and hot corners are on Keyboard Shortcuts above the shared recorder. Terms/privacy remain read-only under Help & Support.
+
+Version 0.5.1 improves the shared window presenter used by settings, onboarding and terms: it restores minimized windows, raises the requested window before activation, and restores focus when activation completes. Only the latest request is retained briefly; closing, minimizing, choosing another window or deactivating cancels it. Launchpod keeps its accessory policy and existing window levels. No app preference, layout, onboarding completion or terms-acceptance migration is needed. The local path dependencies do not create a MacAppEssentials entry in `Package.resolved`; use the documented checkout when reproducing this build.
 
 The app-lifetime onboarding host handles `showForReview()` from Help & Support. Repeated clicks focus the existing review window; closing and reopening starts a fresh review. Review completion does not overwrite saved completion or rerun app startup callbacks.
 
@@ -227,4 +229,4 @@ The app-lifetime onboarding host handles `showForReview()` from Help & Support. 
 
 For an isolated, memory-only preview of the upgrade path, use `--data-dir /tmp/launchpod-terms-preview --preview-terms`. Use `--preview-onboarding` for the first-run path. Neither preview initializes reporting or stores real agreement receipts. Previous legal text is archived in `docs/legal/archive/1.2`.
 
-MacAppEssentials 0.5.0 is GPL-3.0-only. Its license and scope notices are bundled under `Contents/Resources/Licenses`; external SDK licenses remain separate. This dependency update does not assign a new license to unrelated app-owned files.
+MacAppEssentials 0.5.1 is GPL-3.0-only. Its license and scope notices are bundled under `Contents/Resources/Licenses`; external SDK licenses remain separate. This dependency update does not assign a new license to unrelated app-owned files.

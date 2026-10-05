@@ -26,3 +26,5 @@
 - A pristine first catalog scan puts macOS apps and the automatic Tools folder first, with Tools on page one; user-installed apps begin on a separate page after the system apps. Preserve catalog order within groups. Never apply this initial ordering to existing/imported layouts, rescans or settings reset.
 
 - Explicit app-placement reset lives in Features > Layout with confirmation and Undo/Redo. Reuse the default system-first layout policy; remove custom folders but preserve hidden/unavailable apps, stable app IDs and all preferences. General’s feature reset must continue preserving order/folders. Save successfully before applying the new arrangement.
+
+- MacAppEssentials 0.5.1 (`b3e36a4`) supplies activation-aware window presentation through the existing settings/onboarding/terms controllers. Reuse these retained hosts; do not add activation timers, elevate window levels or switch accessory policy to bring them forward. Keep consent and onboarding versions unchanged for this update.
