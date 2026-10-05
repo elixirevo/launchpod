@@ -8,7 +8,7 @@
 
 **Launchpod** is a native macOS app launcher that brings the familiar Launchpad grid, search, pages, and folders to an independent Swift and AppKit app. It's designed to keep your applications easy to find and organize, with a focus on Apple Silicon Macs running macOS Tahoe 26.
 
-*Version 1.3.0. Requires macOS 13.0 or later and Apple Silicon (arm64).*
+*Version 1.3.1. Requires macOS 13.0 or later and Apple Silicon (arm64).*
 
 ## ✨ Features
 
