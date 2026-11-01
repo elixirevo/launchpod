@@ -30,16 +30,29 @@ final class AppCatalog {
         var found: [AppRecord] = [], visited = Set<String>(), visitedDirectories = Set<String>()
         func inspect(_ url: URL) {
             let canonical = url.resolvingSymlinksInPath().standardizedFileURL
+            let parents = Array(canonical.pathComponents.dropLast())
+            let enclosingApps = parents.indices.filter { (parents[$0] as NSString).pathExtension.lowercased() == "app" }
+            // Check the resolved location as well as traversal: explicit roots
+            // and symlinks must not expose helpers inside another app bundle.
+            guard enclosingApps.allSatisfy({ index in
+                let relative = parents.dropFirst(index + 1)
+                return relative.starts(with: ["Contents", "Applications"])
+                    || relative.starts(with: ["Contents", "Developer", "Applications"])
+            }) else { return }
             // LSUIElement controls Dock presence, not whether an app can be
             // launched by the user (e.g. PinShot or Tailscale). Inside app bundles,
             // only the dedicated Applications directories below are traversed.
             guard visited.insert(canonical.path).inserted, let bundle = Bundle(url: canonical) else { return }
             let packageType = bundle.infoDictionary?["CFBundlePackageType"] as? String
+            let backgroundOnly = (bundle.infoDictionary?["LSBackgroundOnly"] as? NSNumber)?.boolValue == true
+            // Standalone apps such as BetterDisplay can declare background-only
+            // execution and still be user-facing. Keep background XPC services
+            // and background tools embedded in another app out of the catalog.
+            guard !backgroundOnly || (enclosingApps.isEmpty && packageType != "XPC!") else { return }
             // Passwords uses XPC!, while Icon Composer omits the package type.
             // Accept those cases only when macOS identifies the bundle as an app.
             guard (packageType == "APPL" || ((packageType == nil || packageType == "XPC!") &&
                     (try? canonical.resourceValues(forKeys:[.isApplicationKey]).isApplication) == true)),
-                  (bundle.infoDictionary?["LSBackgroundOnly"] as? NSNumber)?.boolValue != true,
                   bundle.bundleIdentifier != "com.apple.launchpad.launcher",
                   let executable = bundle.executableURL, fm.isExecutableFile(atPath: executable.path) else { return }
             let title = bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String

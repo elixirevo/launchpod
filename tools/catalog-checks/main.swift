@@ -31,7 +31,8 @@ do {
     let utility = try fixture("MenuUtility", info:["LSUIElement":true,"LSApplicationCategoryType":"public.app-category.utilities"])
     let normal = try fixture("Regular")
     _ = try fixture("LoginHelper",parent:normal.appendingPathComponent("Contents/Library/LoginItems"),info:["LSUIElement":true])
-    _ = try fixture("Background",info:["LSBackgroundOnly":true,"LSUIElement":true])
+    let background = try fixture("Background",info:["LSBackgroundOnly":true,"LSUIElement":true])
+    let backgroundWithoutAgent = try fixture("BackgroundWithoutAgent",info:["LSBackgroundOnly":true])
     _ = try fixture("Broken",executable:false)
     let launchpod = try fixture("Launchpod",info:["CFBundleIdentifier":"app.launchpod.Launchpod","LSUIElement":true])
     _ = try fixture("LegacyLaunchpad",info:["CFBundleIdentifier":"com.apple.launchpad.launcher"])
@@ -43,7 +44,10 @@ do {
     try expect(found.contains { $0.path == utility.path },"user-facing LSUIElement app appears in catalog")
     try expect(found.contains { $0.path == normal.path },"ordinary app remains discoverable")
     try expect(found.contains { $0.path == launchpod.path },"Launchpod itself appears in the catalog")
-    try expect(found.count == 3,"embedded helpers, background services, invalid bundles and duplicate roots stay excluded")
+    try expect(found.contains { $0.path == background.path },"standalone background-only agent such as BetterDisplay appears in catalog")
+    try expect(found.contains { $0.path == backgroundWithoutAgent.path },"standalone background-only app does not require LSUIElement")
+    try expect(found.count == 5,"embedded helpers, invalid bundles and duplicate roots stay excluded")
+    try expect(AppCatalog.discover(roots:[background]).map(\.path) == [background.path],"explicit standalone background app is discoverable")
     try expect(AppCatalog.discover(roots:[utility]).count == 1,"explicit agent-app path also works")
     try expect(found.first { $0.path == utility.path }?.isInitialUtility == false,
         "a separately installed app declaring Utilities is not a default macOS tool")
@@ -57,11 +61,15 @@ do {
     let result = AppSearch.results(for:"menuutility",in:layout)
     try expect(AppSearch.results(for:"launchpod",in:layout).contains { $0.path == launchpod.path },"Launchpod itself is placed and searchable")
     try expect(result.count == 1 && result[0].path == utility.path,"newly discovered agent is placed and searchable")
+    try expect(AppSearch.results(for:"background",in:layout).contains { $0.path == background.path }
+        && layout.location(of:layout.apps.first { $0.path == background.path }!.id) != nil,
+        "standalone background app is placed in the grid and searchable")
     let store = LayoutStore(directory:directory.appendingPathComponent("state"))
     try store.save(layout)
     let restored = try store.load()
     try expect(AppSearch.results(for:"LAUNCHPOD",in:restored).contains { $0.path == launchpod.path },"Launchpod remains searchable after save and reload")
     try expect(AppSearch.results(for:"MENUUTILITY",in:restored).count == 1,"agent remains searchable after save and reload")
+    try expect(AppSearch.results(for:"BACKGROUND",in:restored).contains { $0.path == background.path },"standalone background app persists across reload")
     // Safari is a hidden symlink in /Applications to a visible Cryptex app.
     // Test discovery through the directory, not just a directly supplied app.
     let links = directory.appendingPathComponent("Links")
@@ -103,10 +111,12 @@ do {
     let bundledTools = suite.appendingPathComponent("Contents/Applications")
     let iconComposer = try fixture("Icon Composer", parent:bundledTools, packageType:nil)
     let simulator = try fixture("Simulator", parent:suite.appendingPathComponent("Contents/Developer/Applications"))
-    _ = try fixture("InternalLoginHelper", parent:suite.appendingPathComponent("Contents/Library/LoginItems"))
+    let loginHelper = try fixture("InternalLoginHelper", parent:suite.appendingPathComponent("Contents/Library/LoginItems"))
     _ = try fixture("SampleApp", parent:suite.appendingPathComponent("Contents/Resources/Examples"))
     _ = try fixture("FrameworkHelper", parent:suite.appendingPathComponent("Contents/Frameworks/Support"))
-    _ = try fixture("BackgroundTool", parent:bundledTools, info:["LSBackgroundOnly":true])
+    let backgroundTool = try fixture("BackgroundTool", parent:bundledTools, info:["LSBackgroundOnly":true,"LSUIElement":true])
+    let backgroundDeveloperTool = try fixture("BackgroundDeveloperTool", parent:suite.appendingPathComponent("Contents/Developer/Applications"), info:["LSBackgroundOnly":true])
+    _ = try fixture("XPCService", parent:suite.appendingPathComponent("Contents/XPCServices"), info:["LSBackgroundOnly":true], packageType:"XPC!")
     _ = try fixture("IconHelper", parent:iconComposer.appendingPathComponent("Contents/Library/LoginItems"))
     try fm.createSymbolicLink(at:bundledTools.appendingPathComponent("Parent.app"), withDestinationURL:suite)
     try fm.createSymbolicLink(at:bundledTools.appendingPathComponent("ToolAlias.app"), withDestinationURL:iconComposer)
@@ -114,6 +124,15 @@ do {
     try expect(Set(suiteApps.map(\.path)) == Set([suite.path,iconComposer.path,simulator.path]) && suiteApps.count == 3,
         "suite tools are found without helper/resource apps, duplicates or symlink loops")
     try expect(AppCatalog.discover(roots:[suite]).count == 3,"directly configured or renamed suite includes its tools")
+    try expect(AppCatalog.discover(roots:[backgroundTool,backgroundDeveloperTool,loginHelper,loginHelper.deletingLastPathComponent()]).isEmpty,
+        "direct app or directory roots do not bypass embedded background tool and login helper exclusions")
+    let shortcuts = directory.appendingPathComponent("Shortcuts")
+    try fm.createDirectory(at:shortcuts,withIntermediateDirectories:true)
+    for (name,target) in [("Standalone",background),("Internal",backgroundTool),("Login",loginHelper)] {
+        try fm.createSymbolicLink(at:shortcuts.appendingPathComponent(name+".app"),withDestinationURL:target)
+    }
+    try expect(AppCatalog.discover(roots:[shortcuts]).map(\.path) == [background.path],
+        "resolved symlink locations allow standalone background apps but exclude internal tools and helpers")
     var suiteLayout = LayoutState(); suiteLayout.reconcile(suiteApps)
     try expect(AppSearch.results(for:"icon composer",in:suiteLayout).map(\.path) == [iconComposer.path],"bundled Icon Composer is searchable")
     try expect(AppSearch.results(for:"simulator",in:suiteLayout).map(\.path) == [simulator.path],"developer tools are searchable")
@@ -143,6 +162,14 @@ do {
         print("Installed app: \(target.title); \(target.bundleID); \(target.path)")
         let defaultScan = AppCatalog.discover(roots:AppCatalog().roots)
         try expect(defaultScan.contains { $0.path == url.path },"installed app is also discovered through default scan roots")
+        var defaultLayout = LayoutState(); defaultLayout.reconcileCatalog(defaultScan)
+        let placed = defaultLayout.apps.first { $0.path == url.path }!
+        try expect(defaultLayout.location(of:placed.id) != nil && placed.available,
+            "installed app has an available grid placement after the default catalog scan")
+        try store.save(defaultLayout)
+        let reloaded = try store.load()
+        try expect(AppSearch.results(for:placed.title,in:reloaded).contains { $0.path == url.path },
+            "installed app remains searchable after saving and reloading the default catalog")
     }
     if args.contains("--audit-installed") {
         let installed = AppCatalog.discover(roots:AppCatalog().roots)
